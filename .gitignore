@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.dump
+*.sql.gz
+.env
+incoming/
+output/
+*.log
+venv/

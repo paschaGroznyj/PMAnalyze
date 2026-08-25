@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PMAnalyze — Practice Metrics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,900&family=Space+Mono:wght@400;700&family=Archivo:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --ink:#1E1A16; --paper:#FAF3E7; --orange:#FF5A1F;
+    --peach:#FFD9C7; --mint:#CDE8D5; --yellow:#FBE7A1;
+    --lav:#E3D5F5; --rose:#F8D2DE; --sky:#CFE6F7;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:'Archivo',sans-serif; padding:28px;
+    background-image:radial-gradient(rgba(30,26,22,.035) 1px,transparent 1px);
+    background-size:4px 4px;
+  }
+  .mono{font-family:'Space Mono',monospace;letter-spacing:.25em;text-transform:uppercase}
+  h1,h2,h3{font-family:'Fraunces',serif}
+  .wrap{max-width:1280px;margin:0 auto}
+
+  /* HEADER */
+  header{
+    background:var(--ink); color:var(--paper);
+    border:2px solid var(--ink); padding:26px 30px;
+    display:flex; justify-content:space-between; align-items:flex-end; gap:20px;
+  }
+  header .eyebrow{color:var(--orange); font-size:11px}
+  header h1{font-size:44px; font-weight:900; line-height:.95; margin-top:6px}
+  header .sub{color:#c9beac; font-size:12px; margin-top:10px}
+  .actions{display:flex; flex-direction:column; gap:10px; align-items:stretch; min-width:230px}
+  .actions .btn{width:100%; text-align:center}
+  .btn{
+    background:var(--paper); color:var(--ink); border:2px solid var(--ink);
+    padding:11px 16px; font-family:'Space Mono',monospace; font-size:11px;
+    letter-spacing:.15em; text-transform:uppercase; cursor:pointer;
+    transition:transform .08s, box-shadow .08s;
+  }
+  .btn:hover{transform:translate(-2px,-2px); box-shadow:4px 4px 0 var(--orange)}
+  .btn:active{transform:translate(0,0); box-shadow:none}
+  .btn.accent{background:var(--orange); color:#fff}
+  .btn:disabled{opacity:.5; cursor:wait}
+
+  /* KPI */
+  .kpis{display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-top:22px}
+  .kpi{border:2px solid var(--ink); padding:18px 16px}
+  .kpi .num{font-family:'Fraunces',serif; font-size:40px; font-weight:900; line-height:1}
+  .kpi .lbl{font-size:10px; margin-top:8px}
+  .kpi.p1{background:var(--peach)} .kpi.p2{background:var(--mint)}
+  .kpi.p3{background:var(--yellow)} .kpi.p4{background:var(--lav)} .kpi.p5{background:var(--sky)}
+
+  /* GRID */
+  .grid{display:grid; grid-template-columns:2fr 1fr; gap:14px; margin-top:14px}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px}
+  .panel{border:2px solid var(--ink); background:var(--paper); padding:18px 20px}
+  .panel h3{font-size:13px; font-family:'Space Mono',monospace; letter-spacing:.2em;
+    text-transform:uppercase; border-bottom:2px solid var(--ink); padding-bottom:10px; margin-bottom:14px}
+  .chartbox{position:relative; height:280px}
+  .chartbox.sm{height:230px}
+
+  /* STUDIO LOAD */
+  .stage{margin-bottom:14px}
+  .stage .row{display:flex; justify-content:space-between; font-size:11px;
+    font-family:'Space Mono',monospace; letter-spacing:.1em; text-transform:uppercase; margin-bottom:5px}
+  .bar{height:16px; border:2px solid var(--ink); background:#fff}
+  .bar > span{display:block; height:100%; background:var(--orange)}
+
+  /* MARQUEE */
+  .marquee{margin-top:20px; border:2px solid var(--ink); background:var(--ink); color:var(--paper);
+    overflow:hidden; white-space:nowrap; padding:9px 0}
+  .marquee span{display:inline-block; padding-left:100%; animation:mq 22s linear infinite;
+    font-family:'Space Mono',monospace; font-size:12px; letter-spacing:.25em; text-transform:uppercase}
+  @keyframes mq{0%{transform:translate(0)}100%{transform:translate(-100%)}}
+
+  /* MODAL */
+  .modal-bg{position:fixed; inset:0; background:rgba(30,26,22,.55); display:none;
+    align-items:center; justify-content:center; z-index:50}
+  .modal-bg.on{display:flex}
+  .modal{background:var(--paper); border:2px solid var(--ink); box-shadow:8px 8px 0 var(--orange);
+    width:440px; max-width:92vw; padding:26px}
+  .modal h2{font-size:26px; font-weight:900}
+  .modal .mono{font-size:11px; color:#6b6055; margin-top:4px}
+  .presets{display:flex; gap:8px; margin:18px 0}
+  .chip{flex:1; text-align:center; border:2px solid var(--ink); background:#fff;
+    padding:10px; font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.1em;
+    text-transform:uppercase; cursor:pointer}
+  .chip.on{background:var(--yellow)}
+  .modal label{display:block; font-family:'Space Mono',monospace; font-size:10px;
+    letter-spacing:.2em; text-transform:uppercase; margin:14px 0 6px}
+  .modal input{width:100%; border:2px solid var(--ink); background:#fff; padding:11px 12px;
+    font-family:'Archivo',sans-serif; font-size:14px}
+  .modal .foot{display:flex; gap:10px; margin-top:20px}
+  #toast{position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    background:var(--ink); color:var(--paper); border:2px solid var(--ink);
+    padding:12px 20px; font-family:'Space Mono',monospace; font-size:12px; letter-spacing:.1em;
+    display:none; z-index:60; box-shadow:4px 4px 0 var(--orange)}
+
+  /* ARTICLES TABLE */
+  .articles{margin-top:14px}
+  .tbl-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:12px}
+  .filter{font-size:11px; letter-spacing:.1em; display:flex; align-items:center; gap:8px; cursor:pointer}
+  .filter input{width:16px; height:16px; accent-color:var(--orange); cursor:pointer}
+  #tbl-count{font-size:11px; color:#6b6055}
+  .tbl-scroll{overflow-x:auto}
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  thead th{font-family:'Space Mono',monospace; font-size:10px; letter-spacing:.12em;
+    text-transform:uppercase; text-align:left; padding:10px 12px; border-bottom:2px solid var(--ink);
+    background:var(--yellow)}
+  thead th.c{text-align:center}
+  tbody td{padding:11px 12px; border-bottom:1px solid rgba(30,26,22,.14); vertical-align:middle}
+  tbody td.c{text-align:center; font-family:'Space Mono',monospace; font-size:12px}
+  tbody tr{cursor:pointer; transition:background .1s}
+  tbody tr:hover{background:var(--peach)}
+  .t-title{font-weight:600; max-width:420px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .t-cat{font-size:11px; color:#6b6055}
+  .badge{display:inline-block; padding:2px 8px; border:2px solid var(--ink);
+    font-family:'Space Mono',monospace; font-size:10px; letter-spacing:.05em}
+  .badge.yes{background:var(--mint)} .badge.no{background:var(--rose)}
+  .badge.rev{background:var(--lav)} .badge.norev{background:#fff; color:#9a8f82; border-color:#c9beac}
+  .pager{display:flex; gap:6px; justify-content:center; align-items:center; margin-top:16px; flex-wrap:wrap}
+  .pg{border:2px solid var(--ink); background:#fff; min-width:34px; padding:7px 10px;
+    font-family:'Space Mono',monospace; font-size:12px; cursor:pointer; text-align:center}
+  .pg:hover{background:var(--yellow)}
+  .pg.on{background:var(--orange); color:#fff}
+  .pg.dis{opacity:.4; cursor:default; pointer-events:none}
+  .pg.gap{border:none; background:none; cursor:default}
+
+  /* ARTICLE MODAL */
+  .art-modal-box{width:720px; position:relative; max-height:88vh; overflow-y:auto; overflow-x:hidden}
+  .art-close{position:absolute; top:16px; right:18px; font-family:'Space Mono',monospace;
+    font-size:16px; cursor:pointer; color:#6b6055}
+  .art-close:hover{color:var(--orange)}
+  #am-source{color:var(--orange); font-size:11px}
+  #am-title{font-size:24px; line-height:1.15; margin-top:6px; padding-right:30px}
+  .am-meta{font-size:11px; color:#6b6055; margin-top:10px; line-height:1.6}
+  .am-body{margin-top:18px; border-top:2px solid var(--ink); padding-top:16px;
+    font-size:14px; line-height:1.65}
+  .am-body h1,.am-body h2,.am-body h3{font-size:17px; margin:16px 0 8px}
+  .am-body p{margin:10px 0}
+  .am-body ul,.am-body ol{margin:10px 0 10px 22px}
+  .am-body li{margin:4px 0}
+  .am-body code{font-family:'Space Mono',monospace; background:rgba(30,26,22,.06); padding:1px 5px}
+  .am-body strong{font-weight:700}
+  .am-empty{background:var(--yellow); border:2px dashed var(--ink); padding:16px;
+    font-family:'Space Mono',monospace; font-size:12px; letter-spacing:.05em}
+  .am-abstract{background:rgba(30,26,22,.04); border-left:3px solid var(--orange);
+    padding:12px 16px; margin-top:14px; font-size:13px; color:#3a342d}
+
+  @media(max-width:920px){
+    .kpis{grid-template-columns:repeat(3,1fr)}
+    .grid,.grid2{grid-template-columns:1fr}
+    .art-modal-box{width:94vw}
+    .t-title{max-width:200px}
+  }
+  @media(max-width:500px){
+    header{align-items:flex-start; flex-direction:column}
+    .actions{width:100%; min-width:0; margin-top:12px}
+    .actions .btn{width:100%}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div>
+      <div class="eyebrow mono">Process Mining · Competence Center</div>
+      <h1>PMAnalyze<br>Practice Metrics</h1>
+      <div class="sub mono">Weekly pipeline · arxiv / fluxicon / scholar → relevance → review</div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="btn-parser">⚙ запустить парсер</button>
+      <button class="btn" id="btn-reviews">✎ запустить ревью</button>
+      <button class="btn accent" id="btn-digest">✉ дайджест на почту</button>
+    </div>
+  </header>
+
+  <!-- KPI -->
+  <div class="kpis">
+    <div class="kpi p1"><div class="num" id="k-total">—</div><div class="lbl mono">всего статей</div></div>
+    <div class="kpi p2"><div class="num" id="k-relevant">—</div><div class="lbl mono">релевантных</div></div>
+    <div class="kpi p3"><div class="num" id="k-reviewed">—</div><div class="lbl mono">ревью готово</div></div>
+    <div class="kpi p4"><div class="num" id="k-invalid">—</div><div class="lbl mono">невалидные источники</div></div>
+    <div class="kpi p5"><div class="num" id="k-week">—</div><div class="lbl mono">за неделю</div></div>
+    <div class="kpi p5"><div class="num" id="k-avg">—</div><div class="lbl mono">avg relevance</div></div>
+  </div>
+
+  <!-- ROW 1: dynamics + relevance donut -->
+  <div class="grid">
+    <div class="panel">
+      <h3>Динамика статей во времени</h3>
+      <div class="chartbox"><canvas id="chart-dynamics"></canvas></div>
+    </div>
+    <div class="panel">
+      <h3>Релевантность</h3>
+      <div class="chartbox sm"><canvas id="chart-relevance"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ROW 2: categories + studio load -->
+  <div class="grid2">
+    <div class="panel">
+      <h3>Статьи по категориям</h3>
+      <div class="chartbox sm"><canvas id="chart-categories"></canvas></div>
+    </div>
+    <div class="panel">
+      <h3>Studio Load · этапы пайплайна</h3>
+      <div id="stages"></div>
+    </div>
+  </div>
+
+  <!-- ROW 3: ARTICLES TABLE -->
+  <div class="panel articles">
+    <h3>Статьи из базы</h3>
+    <div class="tbl-head">
+      <label class="filter mono">
+        <input type="checkbox" id="only-rel"> только релевантные
+      </label>
+      <span class="mono" id="tbl-count">—</span>
+    </div>
+    <div class="tbl-scroll">
+      <table id="art-table">
+        <thead>
+          <tr>
+            <th>Название</th><th>Категория</th><th class="c">Score</th>
+            <th class="c">Рел.</th><th class="c">Ревью</th><th class="c">Дата</th>
+          </tr>
+        </thead>
+        <tbody id="art-body"></tbody>
+      </table>
+    </div>
+    <div class="pager" id="pager"></div>
+  </div>
+
+  <div class="marquee"><span id="mq-text">PMAnalyze · loading…</span></div>
+</div>
+
+<!-- ARTICLE / REVIEW MODAL -->
+<div class="modal-bg" id="art-modal">
+  <div class="modal art-modal-box">
+    <div class="art-close" id="art-close">✕</div>
+    <div class="mono" id="am-source">—</div>
+    <h2 id="am-title">—</h2>
+    <div class="am-meta mono" id="am-meta">—</div>
+    <div class="am-body" id="am-body">Загрузка…</div>
+    <div class="foot">
+      <a class="btn" id="am-link" href="#" target="_blank" rel="noopener">открыть источник</a>
+    </div>
+  </div>
+</div>
+
+<!-- DIGEST MODAL -->
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h2>Отправить дайджест</h2>
+    <div class="mono">Подборка подготовленных ревью за период → на почту</div>
+    <label>Период</label>
+    <div class="presets" id="presets">
+      <div class="chip on" data-p="week">за неделю</div>
+      <div class="chip" data-p="month">за месяц</div>
+      <div class="chip" data-p="quarter">за квартал</div>
+    </div>
+    <label>Email получателя</label>
+    <input type="email" id="digest-email" placeholder="name@gmail.com">
+    <div class="foot">
+      <button class="btn" id="digest-cancel">отмена</button>
+      <button class="btn accent" id="digest-send" style="flex:1">отправить</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const CATS = ["Общие принципы","Методики исследования","PM-лог","Проверка качества","Без категории"];
+const CATC = ["#FFD9C7","#CDE8D5","#FBE7A1","#E3D5F5","#CFE6F7"];
+const INK="#1E1A16", ORANGE="#FF5A1F";
+Chart.defaults.font.family = "'Space Mono', monospace";
+Chart.defaults.color = INK;
+Chart.defaults.font.size = 11;
+
+function toast(msg, ms=3200){
+  const t=$("#toast"); t.textContent=msg; t.style.display="block";
+  clearTimeout(t._h); t._h=setTimeout(()=>t.style.display="none", ms);
+}
+
+let charts={};
+function drawDynamics(labels, booked, proposed){
+  charts.dyn && charts.dyn.destroy();
+  charts.dyn = new Chart($("#chart-dynamics"),{
+    type:"line",
+    data:{labels, datasets:[
+      {label:"обработано", data:booked, borderColor:ORANGE, backgroundColor:"rgba(255,90,31,.15)",
+       borderWidth:2, fill:true, tension:.25, pointRadius:3, pointBackgroundColor:INK},
+      {label:"собрано", data:proposed, borderColor:INK, backgroundColor:"rgba(30,26,22,.06)",
+       borderWidth:2, borderDash:[5,4], fill:true, tension:.25, pointRadius:2}
+    ]},
+    options:{responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{position:"bottom",labels:{boxWidth:14,padding:14}}},
+      scales:{x:{grid:{color:"rgba(30,26,22,.08)"}},y:{beginAtZero:true,grid:{color:"rgba(30,26,22,.08)"},ticks:{precision:0}}}}
+  });
+}
+function drawRelevance(rel, irr){
+  charts.rel && charts.rel.destroy();
+  charts.rel = new Chart($("#chart-relevance"),{
+    type:"doughnut",
+    data:{labels:["Релевантно","Нерелевантно"],
+      datasets:[{data:[rel,irr], backgroundColor:["#CDE8D5","#F8D2DE"],
+        borderColor:INK, borderWidth:2}]},
+    options:{responsive:true, maintainAspectRatio:false, cutout:"58%",
+      plugins:{legend:{position:"bottom",labels:{boxWidth:14,padding:14}}}}
+  });
+}
+const CATPAL=["#FFD9C7","#CDE8D5","#FBE7A1","#E3D5F5","#CFE6F7","#F8D2DE","#CDE8D5","#FFD9C7"];
+function drawCategories(byCat){
+  charts.cat && charts.cat.destroy();
+  // сортируем по убыванию, топ-8 групп
+  const entries = Object.entries(byCat||{}).sort((a,b)=>b[1]-a[1]).slice(0,8);
+  const labels = entries.map(e=>e[0]);
+  const counts = entries.map(e=>e[1]);
+  const short = labels.map(c=>c.length>16?c.slice(0,15)+"…":c);
+  charts.cat = new Chart($("#chart-categories"),{
+    type:"bar",
+    data:{labels:short,
+      datasets:[{data:counts,
+        backgroundColor:labels.map((_,i)=>CATPAL[i%CATPAL.length]),
+        borderColor:INK, borderWidth:2}]},
+    options:{indexAxis:"y", responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{title:it=>labels[it[0].dataIndex]}}},
+      scales:{x:{beginAtZero:true,grid:{color:"rgba(30,26,22,.08)"},ticks:{precision:0}},
+              y:{grid:{display:false}}}}
+  });
+}
+function drawStages(stages){
+  const box=$("#stages"); box.innerHTML="";
+  const max = Math.max(1, ...stages.map(s=>s.value));
+  stages.forEach(s=>{
+    const pct = Math.round(s.value/max*100);
+    box.insertAdjacentHTML("beforeend",
+      `<div class="stage"><div class="row"><span>${s.label}</span><span>${s.value}</span></div>
+       <div class="bar"><span style="width:${pct}%"></span></div></div>`);
+  });
+}
+
+async function loadStats(){
+  try{
+    const r = await fetch("/api/stats"); const d = await r.json();
+    if(!d.ok) throw new Error("stats not ok");
+    $("#k-total").textContent    = d.total;
+    $("#k-relevant").textContent = d.relevant;
+    $("#k-reviewed").textContent = d.reviewed;
+    $("#k-invalid").textContent  = d.invalid_sources ?? 0;
+    $("#k-week").textContent     = "+"+d.week_new;
+    $("#k-avg").textContent      = d.avg_relevance;
+
+    const dyn = d.dynamics || {labels:[],collected:[],processed:[]};
+    drawDynamics(dyn.labels, dyn.processed, dyn.collected);
+    drawRelevance(d.relevant, d.irrelevant);
+    drawCategories(d.by_category||{});
+    drawStages([
+      {label:"собрано", value:d.total},
+      {label:"оценка релевантности", value:d.assessed},
+      {label:"pdf прочитано", value:d.reviewed},
+      {label:"ревью готово", value:d.reviewed},
+    ]);
+    $("#mq-text").textContent =
+      `PMAnalyze · всего ${d.total} · релевантных ${d.relevant} · ревью ${d.reviewed} · невалидные источники ${d.invalid_sources ?? 0} · за неделю +${d.week_new} · avg relevance ${d.avg_relevance} ·`;
+  }catch(e){ toast("Ошибка загрузки статистики"); console.error(e); }
+}
+
+// actions
+async function post(url, body){
+  const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+    body: body?JSON.stringify(body):null});
+  let d = {};
+  try{ d = await r.json(); }catch(_){ d = {}; }
+  d.__http = r.status;
+  return d;
+}
+
+let parserInFlight = false;
+let reviewsInFlight = false;
+
+function busyReasonText(reason){
+  if(reason==="parser_already_running" || reason==="parser_lock_busy") return "Парсер уже запущен, дождитесь завершения текущего цикла";
+  if(reason==="reviews_already_running" || reason==="reviews_lock_busy") return "Ревью уже запущено, дождитесь завершения текущей обработки";
+  return "Операция уже выполняется, попробуйте позже";
+}
+
+$("#btn-parser").onclick = async e=>{
+  if(parserInFlight) return;
+  parserInFlight = true;
+  e.target.disabled=true; toast("Запускаю парсер…");
+  try{
+    const d = await post("/api/run/parser");
+    if(d.ok){
+      toast("Парсер запущен (фоново)");
+    }else if(d.__http===409 || d.status==="busy"){
+      toast(busyReasonText(d.reason), 4200);
+    }else{
+      toast("Ошибка запуска парсера", 4200);
+    }
+  }catch(err){
+    toast("Ошибка сети при запуске парсера", 4200);
+  }finally{
+    parserInFlight = false;
+    e.target.disabled=false;
+  }
+};
+
+$("#btn-reviews").onclick = async e=>{
+  if(reviewsInFlight) return;
+  reviewsInFlight = true;
+  e.target.disabled=true; toast("Запускаю обработку ревью…");
+  try{
+    const d = await post("/api/run/reviews?mode=only");
+    if(d.ok){
+      toast("Обработка ревью запущена");
+    }else if(d.__http===409 || d.status==="busy"){
+      toast(busyReasonText(d.reason), 4200);
+    }else{
+      toast("Ошибка запуска ревью", 4200);
+    }
+  }catch(err){
+    toast("Ошибка сети при запуске ревью", 4200);
+  }finally{
+    reviewsInFlight = false;
+    e.target.disabled=false;
+  }
+};
+
+// digest modal
+let preset="week";
+$("#btn-digest").onclick = ()=> $("#modal").classList.add("on");
+$("#digest-cancel").onclick = ()=> $("#modal").classList.remove("on");
+$("#presets").onclick = e=>{
+  const c=e.target.closest(".chip"); if(!c) return;
+  document.querySelectorAll(".chip").forEach(x=>x.classList.remove("on"));
+  c.classList.add("on"); preset=c.dataset.p;
+};
+$("#digest-send").onclick = async e=>{
+  const email=$("#digest-email").value.trim();
+  if(!email || !email.includes("@")){ toast("Введите корректный email"); return; }
+  e.target.disabled=true; toast("Готовлю и отправляю дайджест…");
+  const d = await post("/api/digest/send",{preset, email});
+  toast(d.ok?("Дайджест отправлен: "+email):("Ошибка: "+(d.error||"не удалось отправить")), 4500);
+  e.target.disabled=false;
+  if(d.ok) $("#modal").classList.remove("on");
+};
+
+// ---------------- ARTICLES TABLE ----------------
+let artPage = 1, artPages = 1, onlyRel = false;
+
+function esc(s){ return (s||"").replace(/[&<>"]/g, c => (
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+function fmtDate(d){
+  if(!d) return "—";
+  const s = String(d).slice(0,10);
+  const [y,m,dd] = s.split("-");
+  return dd&&m&&y ? `${dd}.${m}.${y}` : s;
+}
+
+// минимальный markdown -> html (заголовки, списки, **bold**, *italic*, `code`, абзацы)
+function mdToHtml(md){
+  if(!md) return "";
+  const lines = md.replace(/\r/g,"").split("\n");
+  let html="", inList=false;
+  const inline = t => esc(t)
+    .replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>")
+    .replace(/(^|[^*])\*(?!\*)(.+?)\*/g,"$1<em>$2</em>")
+    .replace(/`(.+?)`/g,"<code>$1</code>");
+  for(let raw of lines){
+    const line = raw.trimEnd();
+    const h = line.match(/^(#{1,3})\s+(.*)/);
+    const li = line.match(/^[-*]\s+(.*)/);
+    if(h){ if(inList){html+="</ul>";inList=false;}
+      const lvl=h[1].length; html+=`<h${lvl}>${inline(h[2])}</h${lvl}>`; }
+    else if(li){ if(!inList){html+="<ul>";inList=true;} html+=`<li>${inline(li[1])}</li>`; }
+    else if(line===""){ if(inList){html+="</ul>";inList=false;} }
+    else { if(inList){html+="</ul>";inList=false;} html+=`<p>${inline(line)}</p>`; }
+  }
+  if(inList) html+="</ul>";
+  return html;
+}
+
+async function loadArticles(page){
+  artPage = page || artPage;
+  try{
+    const url = `/api/articles?page=${artPage}&per_page=20&only_relevant=${onlyRel}`;
+    const r = await fetch(url); const d = await r.json();
+    if(!d.ok) throw new Error("articles not ok");
+    artPages = d.pages || 1;
+    $("#tbl-count").textContent = `${d.total} статей · стр. ${d.page}/${d.pages}`;
+    const body = $("#art-body"); body.innerHTML = "";
+    if(!d.articles.length){
+      body.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:#6b6055">Нет статей</td></tr>`;
+    }
+    d.articles.forEach(a=>{
+      const score = a.relevance_score!=null ? Number(a.relevance_score).toFixed(2) : "—";
+      const rel = a.is_relevant===true
+        ? '<span class="badge yes">да</span>'
+        : (a.is_relevant===false ? '<span class="badge no">нет</span>' : '—');
+      const rev = a.has_review
+        ? '<span class="badge rev">есть</span>'
+        : '<span class="badge norev">нет</span>';
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td class="t-title">${esc(a.title||"Без названия")}</td>
+         <td class="t-cat">${esc(a.category||"—")}</td>
+         <td class="c">${score}</td>
+         <td class="c">${rel}</td>
+         <td class="c">${rev}</td>
+         <td class="c">${fmtDate(a.date_sub)}</td>`;
+      tr.onclick = ()=> openArticle(a.id);
+      body.appendChild(tr);
+    });
+    drawPager();
+  }catch(e){ toast("Ошибка загрузки статей"); console.error(e); }
+}
+
+function drawPager(){
+  const p = $("#pager"); p.innerHTML="";
+  const mk = (label, page, cls="")=>{
+    const el = document.createElement("div");
+    el.className = "pg " + cls; el.textContent = label;
+    if(!cls.includes("dis") && !cls.includes("gap")) el.onclick = ()=> loadArticles(page);
+    p.appendChild(el);
+  };
+  mk("‹", artPage-1, artPage<=1?"dis":"");
+  const win = [];
+  for(let i=1;i<=artPages;i++){
+    if(i===1||i===artPages||Math.abs(i-artPage)<=1) win.push(i);
+    else if(win[win.length-1]!=="…") win.push("…");
+  }
+  win.forEach(i=> i==="…" ? mk("…",0,"gap") : mk(i, i, i===artPage?"on":""));
+  mk("›", artPage+1, artPage>=artPages?"dis":"");
+}
+
+$("#only-rel").onchange = e=>{ onlyRel = e.target.checked; loadArticles(1); };
+
+// ---------------- ARTICLE MODAL ----------------
+async function openArticle(id){
+  $("#art-modal").classList.add("on");
+  $("#am-title").textContent = "Загрузка…";
+  $("#am-source").textContent = "";
+  $("#am-meta").textContent = "";
+  $("#am-body").innerHTML = "Загрузка…";
+  $("#am-link").style.display = "none";
+  try{
+    const r = await fetch(`/api/articles/${id}/review`); const d = await r.json();
+    if(!d.ok) throw new Error("not ok");
+    const a = d.article, rev = d.review;
+    $("#am-source").textContent = (a.source||"").toUpperCase();
+    $("#am-title").textContent = a.title || "Без названия";
+    const score = a.relevance_score!=null ? Number(a.relevance_score).toFixed(2) : "—";
+    const authors = Array.isArray(a.authors) ? a.authors.join(", ")
+      : (a.authors ? String(a.authors) : "");
+    const parts = [
+      a.category ? "Категория: "+esc(a.category) : null,
+      "Score: "+score,
+      a.is_relevant===false ? "нерелевантно" : (a.is_relevant===true?"релевантно":null),
+      a.date_sub ? "Дата: "+fmtDate(a.date_sub) : null,
+      authors ? "Авторы: "+esc(authors) : null,
+    ].filter(Boolean);
+    $("#am-meta").innerHTML = parts.join(" · ");
+
+    let bodyHtml = "";
+    if(rev && rev.review_md){
+      bodyHtml = mdToHtml(rev.review_md);
+      if(rev.model_name) bodyHtml += `<div class="mono" style="margin-top:16px;font-size:10px;color:#9a8f82">модель: ${esc(rev.model_name)}</div>`;
+    } else {
+      bodyHtml = `<div class="am-empty">Ревью ещё не сгенерировано для этой статьи.</div>`;
+    }
+    if(a.abstract){
+      bodyHtml += `<div class="am-abstract"><strong>Abstract:</strong><br>${esc(a.abstract)}</div>`;
+    }
+    $("#am-body").innerHTML = bodyHtml;
+
+    const link = a.pdf_url || a.url_article;
+    if(link){ $("#am-link").href = link; $("#am-link").style.display = "inline-block"; }
+  }catch(e){
+    $("#am-body").innerHTML = `<div class="am-empty">Ошибка загрузки статьи.</div>`;
+    console.error(e);
+  }
+}
+$("#art-close").onclick = ()=> $("#art-modal").classList.remove("on");
+$("#art-modal").onclick = e=>{ if(e.target.id==="art-modal") $("#art-modal").classList.remove("on"); };
+
+loadStats();
+loadArticles(1);
+setInterval(loadStats, 60000);
+</script>
+</body>
+</html>

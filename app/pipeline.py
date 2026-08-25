@@ -166,6 +166,21 @@ class PMAnalyzePipeline:
         s = s.strip(" .,:;!?\"'`“”‘’()[]{}")
         return s
 
+    @staticmethod
+    def _canonical_source(source: str) -> str:
+        s = (source or "").strip().lower()
+        if s in {"arxiv", "arxiv_api", "arxiv_html", "https://arxiv.org"}:
+            return "arxiv"
+        return s
+
+    @staticmethod
+    def _canonical_external_id(source: str, external_id: str) -> str:
+        ext = (external_id or "").strip().lower()
+        if PMAnalyzePipeline._canonical_source(source) == "arxiv":
+            ext = re.sub(r"^arxiv_", "", ext)
+            ext = re.sub(r"v[0-9]+$", "", ext)
+        return ext
+
     # ---------------- lifecycle ----------------
     async def start(self):
         if self._task is None:
@@ -287,14 +302,7 @@ class PMAnalyzePipeline:
             return []
 
     async def _upsert_articles(self, articles: list[dict]) -> list[int]:
-        """Upsert новых статей + фильтрация дублей по нормализованному title.
-
-        Правила:
-        1) Базовый уникальный ключ БД: (source, external_id)
-        2) Доп. фильтр дублей: одинаковый нормализованный title
-           • относительно уже существующих записей в БД
-           • внутри текущего батча парсера
-        """
+        """Upsert новых статей + фильтрация дублей по title и canonical (source, external_id)."""
         new_ids = []
         async with self.pool.acquire() as con:
             existing_titles_rows = await con.fetch(
@@ -306,6 +314,7 @@ class PMAnalyzePipeline:
             )
             existing_title_keys = {r['norm_title'] for r in existing_titles_rows if r.get('norm_title')}
             batch_title_keys = set()
+            batch_canon_keys = set()
 
             for a in articles:
                 ext = (a.get("external_id") or "").strip()
@@ -313,10 +322,41 @@ class PMAnalyzePipeline:
                 if not ext or not src:
                     continue
 
+                canon_src = self._canonical_source(src)
+                canon_ext = self._canonical_external_id(src, ext)
+                canon_key = (canon_src, canon_ext)
+                if not canon_src or not canon_ext:
+                    continue
+                if canon_key in batch_canon_keys:
+                    continue
+
+                exists_canon = await con.fetchval(
+                    """
+                    SELECT 1
+                    FROM process_mining.papers_metadata p
+                    WHERE (
+                        CASE
+                            WHEN lower(COALESCE(p.source,'')) = ANY (ARRAY['arxiv','arxiv_api','arxiv_html','https://arxiv.org']) THEN 'arxiv'
+                            ELSE lower(TRIM(BOTH FROM COALESCE(p.source,'')))
+                        END
+                    ) = $1
+                    AND (
+                        CASE
+                            WHEN lower(COALESCE(p.source,'')) = ANY (ARRAY['arxiv','arxiv_api','arxiv_html','https://arxiv.org'])
+                                THEN regexp_replace(regexp_replace(lower(TRIM(BOTH FROM COALESCE(p.external_id,''))), '^arxiv_', ''), 'v[0-9]+$', '')
+                            ELSE lower(TRIM(BOTH FROM COALESCE(p.external_id,'')))
+                        END
+                    ) = $2
+                    LIMIT 1
+                    """,
+                    canon_src, canon_ext,
+                )
+                if exists_canon:
+                    continue
+
                 title = (a.get("title") or "").strip()
                 title_key = self._normalize_title_key(title)
                 if title_key and (title_key in existing_title_keys or title_key in batch_title_keys):
-                    # Дубль по заголовку: не вставляем новую запись
                     continue
 
                 authors = a.get("authors")
@@ -328,7 +368,7 @@ class PMAnalyzePipeline:
                          authors, tags, abstract, category, is_relevant, review_flag,
                          llm_status, created_at, updated_at)
                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,FALSE,FALSE,'new',now(),now())
-                    ON CONFLICT (source, external_id) DO NOTHING
+                    ON CONFLICT DO NOTHING
                     RETURNING id
                     """,
                     ext, src, title, _to_date(a.get("date_sub")),
@@ -337,6 +377,7 @@ class PMAnalyzePipeline:
                     tags if tags is not None else None,
                     a.get("abstract", ""),
                 )
+                batch_canon_keys.add(canon_key)
                 if row:
                     new_ids.append(int(row["id"]))
                     if title_key:

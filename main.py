@@ -9,7 +9,7 @@ import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
@@ -95,6 +95,7 @@ class _DropNoisyProgressEndpoint(logging.Filter):
 
 
 logging.getLogger("uvicorn.access").addFilter(_DropNoisyProgressEndpoint())
+api_logger = logging.getLogger("pmanalyze.api")
 
 
 def _parse_emails_csv(raw: str) -> list[str]:
@@ -334,15 +335,20 @@ async def stats():
 
 # ---------------- Ручные кнопки ----------------
 @app.post("/api/run/parser")
-async def run_parser(background: BackgroundTasks):
+async def run_parser(background: BackgroundTasks, request: Request):
     """Полный цикл: сбор -> релевантность -> ревью (фоново)."""
+    client_ip = (request.client.host if request and request.client else "unknown")
+    ua = request.headers.get("user-agent", "")[:180]
+    api_logger.info(f"parser_button_click ip={client_ip} ua={ua}")
     # Блокируем спам запуска в пределах инстанса
     if not await pipeline._try_claim_parser_run():
+        api_logger.info("parser_button_reject reason=parser_already_running")
         return JSONResponse({"ok": False, "status": "busy", "reason": "parser_already_running"}, status_code=409)
 
     # Блокируем параллельные запуски между инстансами/пользователями
     if not await pipeline._try_lock():
         await pipeline._release_parser_run()
+        api_logger.info("parser_button_reject reason=parser_lock_busy")
         return JSONResponse({"ok": False, "status": "busy", "reason": "parser_lock_busy"}, status_code=409)
 
     async def _run_parser_prelocked():
@@ -352,6 +358,7 @@ async def run_parser(background: BackgroundTasks):
             await pipeline._release_parser_run()
 
     background.add_task(_run_parser_prelocked)
+    api_logger.info("parser_button_accepted status=started")
     return {"ok": True, "status": "started"}
 
 

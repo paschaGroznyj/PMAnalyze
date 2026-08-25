@@ -79,6 +79,16 @@ class PMAnalyzePipeline:
 
         self._reviews_state_lock = asyncio.Lock()
         self._reviews_running = False
+        self._reviews_progress_lock = asyncio.Lock()
+        self._reviews_progress = {
+            "running": False,
+            "mode": "only",
+            "total": 0,
+            "done": 0,
+            "errors": 0,
+            "started_at": None,
+            "updated_at": None,
+        }
 
     @staticmethod
     def _clean_author_name(v: str) -> str:
@@ -525,6 +535,36 @@ class PMAnalyzePipeline:
             self._reviews_running = True
             return True
 
+    async def _reviews_progress_start(self, mode: str, total: int):
+        now = datetime.now(timezone.utc)
+        async with self._reviews_progress_lock:
+            self._reviews_progress = {
+                "running": True,
+                "mode": (mode or "only"),
+                "total": int(total),
+                "done": 0,
+                "errors": 0,
+                "started_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+
+    async def _reviews_progress_tick(self, done_inc: int = 1, err_inc: int = 0):
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._reviews_progress_lock:
+            self._reviews_progress["done"] = int(self._reviews_progress.get("done", 0)) + int(done_inc)
+            self._reviews_progress["errors"] = int(self._reviews_progress.get("errors", 0)) + int(err_inc)
+            self._reviews_progress["updated_at"] = now
+
+    async def _reviews_progress_finish(self):
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._reviews_progress_lock:
+            self._reviews_progress["running"] = False
+            self._reviews_progress["updated_at"] = now
+
+    async def get_reviews_progress(self) -> dict:
+        async with self._reviews_progress_lock:
+            return dict(self._reviews_progress)
+
     async def _release_reviews_run(self):
         async with self._reviews_state_lock:
             self._reviews_running = False
@@ -535,6 +575,7 @@ class PMAnalyzePipeline:
             res = await self.process_pending(limit=limit)
             return {"ok": True, **res}
         finally:
+            await self._reviews_progress_finish()
             await self._unlock()
             await self._release_reviews_run()
 
@@ -544,6 +585,7 @@ class PMAnalyzePipeline:
             res = await self.process_reviews_only(limit=limit)
             return {"ok": True, **res}
         finally:
+            await self._reviews_progress_finish()
             await self._unlock()
             await self._release_reviews_run()
 
@@ -570,11 +612,13 @@ class PMAnalyzePipeline:
                    ORDER BY created_at ASC, id ASC LIMIT $1""",
                 max(1, int(limit)),
             )
+        await self._reviews_progress_start("full", len(rows))
         relevant = reviewed = irrelevant = errors = 0
         for r in rows:
             aid = int(r["id"])
             art = await self._get_article(aid)
             if not art:
+                await self._reviews_progress_tick(done_inc=1, err_inc=1)
                 continue
             try:
                 await self._set_status(aid, "llm_processing")
@@ -583,21 +627,25 @@ class PMAnalyzePipeline:
                 if not rel["is_relevant"]:
                     irrelevant += 1
                     await self._set_status(aid, "irrelevant")
+                    await self._reviews_progress_tick(done_inc=1)
                     continue
                 relevant += 1
                 review_md, review_err = await self.generate_review(art)
                 if not review_md:
                     errors += 1
                     await self._set_status(aid, "review_error", review_err or "review_generation_failed")
+                    await self._reviews_progress_tick(done_inc=1, err_inc=1)
                     continue
                 await self._save_review(aid, review_md)
                 reviewed += 1
                 await self._set_status(aid, "reviewed")
+                await self._reviews_progress_tick(done_inc=1)
             except Exception as e:
                 errors += 1
                 await self._set_status(aid, "review_error", str(e)[:300])
+                await self._reviews_progress_tick(done_inc=1, err_inc=1)
         return {"relevant": relevant, "reviewed": reviewed,
-                "irrelevant": irrelevant, "errors": errors}
+                "irrelevant": irrelevant, "errors": errors, "total": len(rows)}
 
     async def process_reviews_only(self, limit: int = 200) -> dict:
         """Собрать ревью для already-relevant без вызова assess_relevance()."""
@@ -613,12 +661,14 @@ class PMAnalyzePipeline:
                    LIMIT $1""",
                 max(1, int(limit)),
             )
+        await self._reviews_progress_start("only", len(rows))
         reviewed = errors = skipped = 0
         for r in rows:
             aid = int(r["id"])
             art = await self._get_article(aid)
             if not art:
                 skipped += 1
+                await self._reviews_progress_tick(done_inc=1, err_inc=1)
                 continue
             try:
                 await self._set_status(aid, "llm_processing")
@@ -626,13 +676,16 @@ class PMAnalyzePipeline:
                 if not review_md:
                     errors += 1
                     await self._set_status(aid, "review_error", review_err or "review_generation_failed")
+                    await self._reviews_progress_tick(done_inc=1, err_inc=1)
                     continue
                 await self._save_review(aid, review_md)
                 reviewed += 1
                 await self._set_status(aid, "reviewed")
+                await self._reviews_progress_tick(done_inc=1)
             except Exception as e:
                 errors += 1
                 await self._set_status(aid, "review_error", str(e)[:300])
+                await self._reviews_progress_tick(done_inc=1, err_inc=1)
         return {"reviewed": reviewed, "errors": errors, "skipped": skipped, "total": len(rows)}
 
     # ---------------- db helpers ----------------

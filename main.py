@@ -220,6 +220,27 @@ async def run_reviews(background: BackgroundTasks, limit: int = 50, mode: str = 
     return {"ok": True, "status": "started", "limit": limit, "mode": mode}
 
 
+@app.get("/api/run/reviews/progress")
+async def run_reviews_progress():
+    """Прогресс текущего запуска ревью для UI (кнопка 121/125)."""
+    p = await pipeline.get_reviews_progress()
+    total = int(p.get("total") or 0)
+    done = int(p.get("done") or 0)
+    errors = int(p.get("errors") or 0)
+    remaining = max(0, total - done)
+    return {
+        "ok": True,
+        "running": bool(p.get("running")),
+        "mode": p.get("mode") or "only",
+        "done": done,
+        "total": total,
+        "errors": errors,
+        "remaining": remaining,
+        "started_at": p.get("started_at"),
+        "updated_at": p.get("updated_at"),
+    }
+
+
 # ---------------- Дайджест на почту ----------------
 class DigestReq(BaseModel):
     preset: str = "week"          # week | month | quarter

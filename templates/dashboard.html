@@ -48,6 +48,9 @@
   .btn:active{transform:translate(0,0); box-shadow:none}
   .btn.accent{background:var(--orange); color:#fff}
   .btn:disabled{opacity:.5; cursor:wait}
+  .btn.progress{
+    background:linear-gradient(90deg,var(--mint) var(--pct,0%), var(--paper) var(--pct,0%));
+  }
 
   /* KPI */
   .kpis{display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-top:22px}
@@ -501,11 +504,66 @@ async function post(url, body){
 
 let parserInFlight = false;
 let reviewsInFlight = false;
+let reviewsProgressPoll = null;
+let reviewsProgressDone = 0;
+let reviewsProgressTotal = 0;
 
 function busyReasonText(reason){
   if(reason==="parser_already_running" || reason==="parser_lock_busy") return "Парсер уже запущен, дождитесь завершения текущего цикла";
   if(reason==="reviews_already_running" || reason==="reviews_lock_busy") return "Ревью уже запущено, дождитесь завершения текущей обработки";
   return "Операция уже выполняется, попробуйте позже";
+}
+
+const reviewsBtn = $("#btn-reviews");
+function renderReviewsProgress(done, total, running){
+  const d = Math.max(0, Number(done||0));
+  const t = Math.max(0, Number(total||0));
+  if(t<=0){
+    reviewsBtn.classList.remove("progress");
+    reviewsBtn.style.removeProperty("--pct");
+    reviewsBtn.textContent = "✎ запустить ревью";
+    return;
+  }
+  const pct = Math.max(0, Math.min(100, Math.round((d*100)/t)));
+  reviewsBtn.classList.add("progress");
+  reviewsBtn.style.setProperty("--pct", pct+"%");
+  reviewsBtn.textContent = `✎ ревью ${d}/${t}`;
+  if(!running && d>=t){
+    setTimeout(()=>{
+      reviewsBtn.classList.remove("progress");
+      reviewsBtn.style.removeProperty("--pct");
+      reviewsBtn.textContent = "✎ запустить ревью";
+    }, 3500);
+  }
+}
+
+function stopReviewsProgressPoll(){
+  if(reviewsProgressPoll){
+    clearInterval(reviewsProgressPoll);
+    reviewsProgressPoll = null;
+  }
+}
+
+async function syncReviewsProgress(){
+  try{
+    const r = await fetch("/api/run/reviews/progress");
+    const d = await r.json();
+    if(!d.ok) return;
+    reviewsProgressDone = Number(d.done||0);
+    reviewsProgressTotal = Number(d.total||0);
+    renderReviewsProgress(reviewsProgressDone, reviewsProgressTotal, !!d.running);
+    if(!d.running && reviewsProgressTotal>0 && reviewsProgressDone>=reviewsProgressTotal){
+      stopReviewsProgressPoll();
+      loadStats();
+      loadSearchStats();
+    }
+  }catch(_){/* silent */}
+}
+
+function startReviewsProgressPoll(){
+  if(reviewsProgressPoll) return;
+  syncReviewsProgress();
+  reviewsProgressPoll = setInterval(syncReviewsProgress, 1500);
 }
 
 $("#btn-parser").onclick = async e=>{
@@ -537,8 +595,10 @@ $("#btn-reviews").onclick = async e=>{
     const d = await post("/api/run/reviews?mode=only");
     if(d.ok){
       toast("Обработка ревью запущена");
+      startReviewsProgressPoll();
     }else if(d.__http===409 || d.status==="busy"){
       toast(busyReasonText(d.reason), 4200);
+      startReviewsProgressPoll();
     }else{
       toast("Ошибка запуска ревью", 4200);
     }
@@ -879,6 +939,7 @@ sGo.onclick = runHybrid;
 sQ.addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); runHybrid(); } });
 
 loadSearchStats();
+startReviewsProgressPoll();
 
 loadStats();
 loadArticles(1);

@@ -464,16 +464,25 @@ class PMAnalyzePipeline:
         if not text:
             return False
         t = text.lower()
+        # Ловим только явные отказы/запросы прислать данные, без слишком общих фраз.
         bad = [
-            "я вижу, что",
-            "текст статьи",
-            "не был передан",
-            "вставьте текст",
+            "текст статьи не был передан",
+            "не был передан текст статьи",
+            "вставьте текст статьи",
+            "пришлите текст статьи",
+            "предоставьте текст статьи",
+            "чтобы выполнить задачу, мне нужен",
+            "не могу выполнить задачу без",
+            "недостаточно данных для выполнения",
             "список файлов",
             "содержимое яндекс диска",
-            "чтобы выполнить задачу, мне нужен",
         ]
-        return any(x in t for x in bad)
+        if any(x in t for x in bad):
+            return True
+        # Мягкая эвристика: одновременно есть маркер отказа + просьба прислать контент.
+        refusal_markers = ["не могу", "невозможно", "не получится", "недостаточно данных"]
+        request_markers = ["пришлите", "предоставьте", "вставьте", "нужен текст"]
+        return any(rm in t for rm in refusal_markers) and any(qm in t for qm in request_markers)
 
     async def generate_review(self, art: dict) -> tuple[str, str | None]:
         # Для Yandex: сначала бинарный PDF -> затем page fetch fallback.
@@ -511,10 +520,26 @@ class PMAnalyzePipeline:
         filename = f"{art.get('source','src')}_{art.get('external_id','id')}"
         authors_hint = self._normalize_authors(art.get("authors"))
         prompt = build_review_prompt(filename, source_url, page_text, authors_hint=authors_hint)
+
+        # 1-я попытка
         review = await self._llm(self.settings.review_model, prompt, max_tokens=2500)
         if self._looks_like_refusal(review):
-            print(f"[pmanalyze] refusal-like review for article_id={art.get('id')} source={art.get('source')}")
-            return "", "llm_refusal_or_bad_input"
+            print(f"[pmanalyze] refusal-like review for article_id={art.get('id')} source={art.get('source')} -> retry")
+            # 2-я попытка: более короткий и строгий промпт-антиотказ
+            retry_prompt = (
+                prompt
+                + "\n\nВАЖНО: входной текст статьи уже передан выше. "
+                  "Не проси прислать текст, не описывай ограничения. "
+                  "Сразу выдай итог строго по шаблону."
+            )
+            review = await self._llm(self.settings.review_model, retry_prompt, max_tokens=2500)
+            if self._looks_like_refusal(review):
+                print(f"[pmanalyze] refusal-like review persisted for article_id={art.get('id')} source={art.get('source')}")
+                return "", "llm_refusal_or_bad_input"
+
+        if not (review or "").strip():
+            return "", "review_generation_failed"
+
         return review, None
 
     async def _try_claim_parser_run(self) -> bool:

@@ -452,6 +452,43 @@ class PMAnalyzePipeline:
             print(f"[pmanalyze] pdf download/extract error: {e}")
             return ""
 
+    def _extract_ieee_arnumber(self, *urls: str) -> str:
+        """Достаёт arnumber из ieee-URL (query или /document/<id>)."""
+        for u in urls:
+            if not u:
+                continue
+            try:
+                q = urlparse(u).query or ""
+                m = re.search(r"(?:^|&)arnumber=(\d+)(?:&|$)", q)
+                if m:
+                    return m.group(1)
+                m = re.search(r"/document/(\d+)", u)
+                if m:
+                    return m.group(1)
+                m = re.search(r"/(\d+)\.pdf", u)
+                if m:
+                    return m.group(1)
+            except Exception:
+                pass
+        return ""
+
+    def _ieee_candidate_urls(self, url_article: str, pdf_url: str) -> list[str]:
+        """Кандидаты для IEEE: сначала страница статьи, затем stamp-URL и исходный pdf."""
+        out: list[str] = []
+        for u in [url_article, pdf_url]:
+            if u and u not in out:
+                out.append(u)
+        ar = self._extract_ieee_arnumber(url_article, pdf_url)
+        if ar:
+            for u in [
+                f"https://ieeexplore.ieee.org/document/{ar}",
+                f"https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber={ar}",
+                f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={ar}",
+            ]:
+                if u not in out:
+                    out.append(u)
+        return out
+
     def _looks_like_yandex_listing(self, text: str) -> bool:
         if not text:
             return False
@@ -507,11 +544,34 @@ class PMAnalyzePipeline:
                 if self._looks_like_yandex_listing(page_text):
                     page_text = ""
         else:
-            page_text = await self._fetch_page_text(source_url)
-            if (not page_text or self._looks_like_yandex_listing(page_text)) and pdf_url and pdf_url != source_url:
-                page_text = await self._fetch_page_text(pdf_url)
+            # Важно: для IEEE прямой PDF часто даёт 418. Сначала пробуем страницу статьи.
+            candidate_urls = []
+            if "ieeexplore.ieee.org" in source:
+                candidate_urls = self._ieee_candidate_urls(url_article, pdf_url)
+            else:
+                # Общий порядок: сначала страница статьи, затем pdf
+                for u in [url_article, source_url, pdf_url]:
+                    if u and u not in candidate_urls:
+                        candidate_urls.append(u)
+
+            for u in candidate_urls:
+                page_text = await self._fetch_page_text(u)
+                if page_text and not self._looks_like_yandex_listing(page_text):
+                    source_url = u
+                    break
+                page_text = ""
+
             if not page_text:
-                page_text = await self._download_pdf_text(pdf_url)
+                # Последний fallback — бинарная выкачка PDF
+                # Для IEEE сперва пробуем stampPDF по arnumber
+                if "ieeexplore.ieee.org" in source:
+                    ar = self._extract_ieee_arnumber(url_article, pdf_url)
+                    if ar:
+                        page_text = await self._download_pdf_text(f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={ar}")
+                        if page_text:
+                            source_url = f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={ar}"
+                if not page_text:
+                    page_text = await self._download_pdf_text(pdf_url)
 
         if not page_text:
             print(f"[pmanalyze] empty content for article_id={art.get('id')} source={art.get('source')} ext={art.get('external_id')}")

@@ -14,6 +14,7 @@ from app.pipeline import PMAnalyzePipeline, Settings
 from app.prompts import CATEGORIES
 from app.email_sender import EmailSender
 from app.digest import collect_digest, render_digest_html, PRESET_TITLE, render_reviews_markdown, upload_markdown_to_obs
+from app.search import search_quick, search_hybrid, llm_summary
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -395,3 +396,75 @@ async def list_runs(limit: int = 20):
             "SELECT * FROM process_mining.parser_runs ORDER BY id DESC LIMIT $1",
             min(100, max(1, limit)))
     return {"ok": True, "runs": [dict(r) for r in rows]}
+
+
+# ---------------- Поиск по ревью (quick / hybrid / +LLM-саммари) ----------------
+@app.get("/api/search/stats")
+async def api_search_stats():
+    """Сколько векторов в базе + покрытие ревью эмбеддингами."""
+    try:
+        async with pool.acquire() as con:
+            row = await con.fetchrow(
+                """
+                SELECT
+                    (SELECT count(*) FROM process_mining.review_embeddings) AS total_rows,
+                    (SELECT count(*) FROM process_mining.review_embeddings
+                      WHERE embedding IS NOT NULL) AS with_embedding,
+                    (SELECT count(DISTINCT article_id) FROM process_mining.reviews
+                      WHERE review_md IS NOT NULL AND length(trim(review_md)) > 0) AS reviewable_articles,
+                    (SELECT max(updated_at) FROM process_mining.review_embeddings) AS updated_at,
+                    (SELECT model FROM process_mining.review_embeddings
+                      ORDER BY updated_at DESC NULLS LAST LIMIT 1) AS model
+                """
+            )
+        d = dict(row)
+        upd = d.get("updated_at")
+        return {
+            "ok": True,
+            "vectors": d["with_embedding"],
+            "total_rows": d["total_rows"],
+            "reviewable_articles": d["reviewable_articles"],
+            "dim": 4096,
+            "model": d.get("model"),
+            "updated_at": upd.isoformat() if upd else None,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+class HybridSearchIn(BaseModel):
+    q: str
+    limit: int = 10
+    llm_summary: bool = False
+
+
+@app.get("/api/search/quick")
+async def api_search_quick(q: str = "", limit: int = 8):
+    """Live-поиск по совпадению слов (pg_trgm/ILIKE), для typeahead."""
+    try:
+        items = await search_quick(pool, q, min(20, max(1, limit)))
+        return {"ok": True, "q": q, "count": len(items), "items": items}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@app.post("/api/search/hybrid")
+async def api_search_hybrid(body: HybridSearchIn):
+    """Гибридный поиск BM25 + вектор (RRF). Опционально LLM-саммари по топу."""
+    q = (body.q or "").strip()
+    if not q:
+        return JSONResponse({"ok": False, "error": "empty query"}, status_code=400)
+    try:
+        items = await search_hybrid(pool, q, min(20, max(1, body.limit)))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"search: {type(e).__name__}: {e}"}, status_code=500)
+
+    summary = None
+    if body.llm_summary and items:
+        try:
+            summary = await llm_summary(q, items[:6])
+        except Exception as e:
+            summary = None
+            return {"ok": True, "q": q, "count": len(items), "items": items,
+                    "summary": None, "summary_error": f"{type(e).__name__}: {e}"}
+    return {"ok": True, "q": q, "count": len(items), "items": items, "summary": summary}

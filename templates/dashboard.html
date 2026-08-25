@@ -196,6 +196,44 @@
     .wx-sky{right:34%}
   }
 
+  /* ===== SEARCH PANEL ===== */
+  .search-panel{grid-column:1/-1; margin-top:20px}
+  .search-head{display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap}
+  .search-vcount{font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.05em;
+    color:#6b6055; border:2px solid var(--ink); background:var(--mint); padding:4px 10px}
+  .search-vcount b{color:var(--ink)}
+  .search-row{display:flex; align-items:center; gap:14px; margin-top:14px; flex-wrap:wrap}
+  .search-inp-wrap{position:relative; flex:1; min-width:260px}
+  #search-q{width:100%; box-sizing:border-box; border:2px solid var(--ink); background:#fff;
+    padding:12px 48px 12px 14px; font-family:'Space Mono',monospace; font-size:13px; color:var(--ink)}
+  #search-q:focus{outline:none; box-shadow:3px 3px 0 var(--orange)}
+  .search-go{position:absolute; right:6px; top:50%; transform:translateY(-50%);
+    border:2px solid var(--ink); background:var(--yellow); cursor:pointer; font-size:15px;
+    width:34px; height:34px; line-height:1; padding:0}
+  .search-go:hover{background:var(--orange)}
+  .search-llm{white-space:nowrap; display:flex; align-items:center; gap:6px; font-size:12px}
+  .search-hint{margin-top:8px; font-size:10px; color:#9a8f82; letter-spacing:.04em}
+  .quick-drop{position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:30;
+    background:#fff; border:2px solid var(--ink); max-height:280px; overflow-y:auto; display:none}
+  .quick-drop.open{display:block}
+  .quick-item{padding:9px 12px; border-bottom:1px solid rgba(30,26,22,.12); cursor:pointer; font-size:12px}
+  .quick-item:last-child{border-bottom:none}
+  .quick-item:hover{background:var(--yellow)}
+  .quick-item .qi-title{font-weight:700; line-height:1.25}
+  .quick-item .qi-snip{color:#6b6055; font-size:11px; margin-top:3px;
+    font-family:'Space Mono',monospace; line-height:1.4}
+  .search-summary{margin-top:16px; background:rgba(30,26,22,.04); border-left:3px solid var(--orange);
+    padding:14px 18px; font-size:13px; line-height:1.65; color:#3a342d}
+  .search-summary .ss-title{font-family:'Space Mono',monospace; font-size:10px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--orange); margin-bottom:8px}
+  .search-results{margin-top:16px; display:flex; flex-direction:column; gap:10px}
+  .sr-item{border:2px solid var(--ink); background:#fff; padding:12px 14px; cursor:pointer}
+  .sr-item:hover{box-shadow:3px 3px 0 var(--ink)}
+  .sr-title{font-weight:700; font-size:14px; line-height:1.25}
+  .sr-meta{font-family:'Space Mono',monospace; font-size:10px; color:#9a8f82; margin-top:4px; letter-spacing:.04em}
+  .sr-snip{font-size:12px; color:#4a443c; margin-top:6px; line-height:1.5}
+  .search-empty{font-family:'Space Mono',monospace; font-size:12px; color:#9a8f82; padding:8px 0}
+
 </style>
 </head>
 <body>
@@ -257,6 +295,28 @@
       <h3>Studio Load · этапы пайплайна</h3>
       <div id="stages"></div>
     </div>
+  </div>
+
+  <!-- ROW 2.5: SEARCH -->
+  <div class="panel search-panel">
+    <div class="search-head">
+      <h3>Поиск по ревью</h3>
+      <span class="search-vcount" id="search-vcount">векторов: <b>—</b></span>
+    </div>
+    <div class="search-row">
+      <div class="search-inp-wrap">
+        <input type="text" id="search-q" autocomplete="off"
+               placeholder="начни печатать — быстрый поиск; жми лупу — гибридный (BM25 + вектор)">
+        <button class="search-go" id="search-go" title="Гибридный поиск">🔍</button>
+        <div class="quick-drop" id="quick-drop"></div>
+      </div>
+      <label class="filter mono search-llm">
+        <input type="checkbox" id="search-llm"> LLM-саммари
+      </label>
+    </div>
+    <div class="search-hint mono" id="search-hint">Быстрый поиск по словам работает по мере ввода. Enter или лупа — гибридный поиск.</div>
+    <div class="search-summary" id="search-summary" style="display:none"></div>
+    <div class="search-results" id="search-results"></div>
   </div>
 
   <!-- ROW 3: ARTICLES TABLE -->
@@ -697,9 +757,124 @@ async function wxLoad(){
 wxTick(); setInterval(wxTick, 1000*20);   // время локально, обновляем часто
 wxLoad(); setInterval(wxLoad, 1800*1000); // погода раз в 30 мин
 
+/* ===== SEARCH (quick typeahead + hybrid + LLM summary) ===== */
+const sQ = $("#search-q"), sGo = $("#search-go"), sLlm = $("#search-llm"),
+      sDrop = $("#quick-drop"), sRes = $("#search-results"),
+      sSum = $("#search-summary"), sHint = $("#search-hint"),
+      sVcount = $("#search-vcount");
+
+async function loadSearchStats(){
+  try{
+    const r = await fetch("/api/search/stats"); const d = await r.json();
+    if(d.ok){
+      const b = sVcount.querySelector("b");
+      b.textContent = d.vectors;
+      let tip = `${d.vectors} из ${d.reviewable_articles} ревью`;
+      if(d.model) tip += ` · ${d.model}`;
+      if(d.dim) tip += ` · dim ${d.dim}`;
+      sVcount.title = tip;
+    }
+  }catch(e){ console.error("search stats", e); }
+}
+
+function snippet(s, n=180){
+  s = (s||"").replace(/\s+/g," ").trim();
+  return s.length>n ? s.slice(0,n)+"…" : s;
+}
+
+// ---- quick typeahead ----
+let qTimer=null, qSeq=0;
+sQ.addEventListener("input", ()=>{
+  const q = sQ.value.trim();
+  clearTimeout(qTimer);
+  if(q.length<2){ sDrop.classList.remove("open"); sDrop.innerHTML=""; return; }
+  qTimer = setTimeout(async ()=>{
+    const my = ++qSeq;
+    try{
+      const r = await fetch("/api/search/quick?limit=8&q="+encodeURIComponent(q));
+      const d = await r.json();
+      if(my!==qSeq) return;              // пришёл устаревший ответ — игнор
+      if(!d.ok || !d.items || !d.items.length){
+        sDrop.innerHTML = `<div class="quick-item"><div class="qi-snip">ничего не найдено</div></div>`;
+        sDrop.classList.add("open"); return;
+      }
+      sDrop.innerHTML = d.items.map(it=>
+        `<div class="quick-item" data-id="${it.article_id}">
+           <div class="qi-title">${esc(it.title||"Без названия")}</div>
+           <div class="qi-snip">${esc(snippet(it.snippet||it.content,120))}</div>
+         </div>`).join("");
+      sDrop.classList.add("open");
+      sDrop.querySelectorAll(".quick-item[data-id]").forEach(el=>{
+        el.onclick = ()=>{ sDrop.classList.remove("open"); openArticle(Number(el.dataset.id)); };
+      });
+    }catch(e){ console.error("quick", e); }
+  }, 220);
+});
+// клик вне — закрыть дропдаун
+document.addEventListener("click", e=>{
+  if(!sDrop.contains(e.target) && e.target!==sQ) sDrop.classList.remove("open");
+});
+
+// ---- hybrid search ----
+async function runHybrid(){
+  const q = sQ.value.trim();
+  if(q.length<2){ toast("Введите запрос (мин. 2 символа)"); return; }
+  sDrop.classList.remove("open");
+  sSum.style.display="none"; sSum.innerHTML="";
+  sRes.innerHTML = `<div class="search-empty">Ищу…</div>`;
+  const wantLlm = sLlm.checked;
+  try{
+    const r = await fetch("/api/search/hybrid", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({q, limit:10, llm_summary: wantLlm})
+    });
+    const d = await r.json();
+    if(!d.ok){ sRes.innerHTML=`<div class="search-empty">Ошибка: ${esc(d.error||"unknown")}</div>`; return; }
+    if(!d.items || !d.items.length){
+      sRes.innerHTML = `<div class="search-empty">По запросу «${esc(q)}» ничего не найдено.</div>`;
+      return;
+    }
+    // саммари
+    if(wantLlm){
+      if(d.summary){
+        sSum.innerHTML = `<div class="ss-title">LLM-саммари по топ-результатам</div>${mdToHtml(d.summary)}`;
+        sSum.style.display="block";
+      } else if(d.summary_error){
+        sSum.innerHTML = `<div class="ss-title">LLM-саммари</div><span class="mono" style="font-size:11px;color:#9a8f82">не удалось: ${esc(d.summary_error)}</span>`;
+        sSum.style.display="block";
+      }
+    }
+    // результаты
+    sRes.innerHTML = d.items.map(it=>{
+      const meta = [
+        it.source ? String(it.source).toUpperCase() : null,
+        it.score!=null ? "score "+Number(it.score).toFixed(3) : null,
+        it.date_sub ? fmtDate(it.date_sub) : null,
+      ].filter(Boolean).join(" · ");
+      return `<div class="sr-item" data-id="${it.article_id}">
+        <div class="sr-title">${esc(it.title||"Без названия")}</div>
+        <div class="sr-meta">${esc(meta)}</div>
+        <div class="sr-snip">${esc(snippet(it.snippet||it.content,240))}</div>
+      </div>`;
+    }).join("");
+    sRes.querySelectorAll(".sr-item[data-id]").forEach(el=>{
+      el.onclick = ()=> openArticle(Number(el.dataset.id));
+    });
+  }catch(e){
+    sRes.innerHTML = `<div class="search-empty">Ошибка сети при поиске.</div>`;
+    console.error("hybrid", e);
+  }
+}
+
+sGo.onclick = runHybrid;
+sQ.addEventListener("keydown", e=>{ if(e.key==="Enter"){ e.preventDefault(); runHybrid(); } });
+
+loadSearchStats();
+
 loadStats();
 loadArticles(1);
 setInterval(loadStats, 60000);
+setInterval(loadSearchStats, 60000);
 </script>
 </body>
 </html>

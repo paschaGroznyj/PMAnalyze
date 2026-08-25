@@ -1,0 +1,23 @@
+FROM postgres:16-alpine
+
+# pgvector 0.8.0 — сборка из исходников под postgres:16-alpine.
+# Закрепляем расширение в образе, чтобы оно не слетало при пересоздании контейнера.
+ARG PGVECTOR_VERSION=v0.8.0
+
+RUN set -eux; \
+    apk add --no-cache --virtual .build-deps \
+        build-base \
+        clang21 \
+        llvm21-dev \
+        git; \
+    git clone --branch "${PGVECTOR_VERSION}" --depth 1 \
+        https://github.com/pgvector/pgvector.git /tmp/pgvector; \
+    cd /tmp/pgvector; \
+    make OPTFLAGS=""; \
+    make install; \
+    cd /; \
+    rm -rf /tmp/pgvector; \
+    apk del .build-deps
+
+# Автосоздание расширения при первой инициализации кластера.
+COPY init-pgvector.sql /docker-entrypoint-initdb.d/00-pgvector.sql

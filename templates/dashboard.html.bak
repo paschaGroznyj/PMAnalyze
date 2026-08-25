@@ -162,40 +162,7 @@
     header{align-items:flex-start; flex-direction:column}
     .actions{width:100%; min-width:0; margin-top:12px}
     .actions .btn{width:100%}
-    .kpis{grid-template-columns:repeat(2,1fr); gap:10px}
-    .kpi{padding:14px 12px}
-    .kpi .num{font-size:32px}
   }
-
-  /* ===== WEATHER WIDGET ===== */
-  .wx-widget{
-    position:relative; overflow:hidden;
-    min-width:190px; max-width:210px;
-    border:2px solid var(--ink); background:var(--paper); color:var(--ink);
-    padding:14px 16px; display:flex; flex-direction:column; gap:2px;
-    align-self:stretch;
-  }
-  .wx-city{font-family:'Space Mono',monospace; font-size:10px;
-    letter-spacing:.12em; text-transform:uppercase; color:var(--orange); z-index:2}
-  .wx-time{font-family:'Fraunces',serif; font-weight:900;
-    font-size:40px; line-height:.95; z-index:2}
-  .wx-temp{font-family:'Fraunces',serif; font-weight:900;
-    font-size:34px; line-height:1; margin-top:4px; z-index:2}
-  .wx-sub{font-family:'Space Mono',monospace; font-size:9px;
-    letter-spacing:.08em; color:#7a7167; z-index:2; margin-top:2px}
-  /* SVG-статус погоды фоном блока */
-  .wx-sky{position:absolute; right:-12px; top:50%; transform:translateY(-50%);
-    width:120px; height:120px; opacity:.16; z-index:1; pointer-events:none}
-  .wx-sky svg{width:100%; height:100%}
-
-  @media(max-width:500px){
-    .wx-widget{max-width:none; width:100%; margin-top:12px;
-      flex-direction:row; align-items:center; justify-content:space-between; gap:14px}
-    .wx-time{font-size:34px}
-    .wx-temp{font-size:30px; margin-top:0}
-    .wx-sky{right:34%}
-  }
-
 </style>
 </head>
 <body>
@@ -211,17 +178,6 @@
       <button class="btn" id="btn-parser">⚙ запустить парсер</button>
       <button class="btn" id="btn-reviews">✎ запустить ревью</button>
       <button class="btn accent" id="btn-digest">✉ дайджест на почту</button>
-    </div>
-    <div class="wx-widget" id="wx-widget">
-      <div class="wx-sky" id="wx-sky"></div>
-      <div>
-        <div class="wx-city" id="wx-city">—</div>
-        <div class="wx-time" id="wx-time">--:--</div>
-      </div>
-      <div>
-        <div class="wx-temp" id="wx-temp">—</div>
-        <div class="wx-sub" id="wx-sub">загрузка…</div>
-      </div>
     </div>
   </header>
 
@@ -638,64 +594,6 @@ async function openArticle(id){
 }
 $("#art-close").onclick = ()=> $("#art-modal").classList.remove("on");
 $("#art-modal").onclick = e=>{ if(e.target.id==="art-modal") $("#art-modal").classList.remove("on"); };
-
-
-/* ===== WEATHER WIDGET ===== */
-const WX_ORANGE="#FF5A1F", WX_INK="#1E1A16";
-// 4 SVG под палитру дашборда. cloud_cover: 0-20 ясно, 20-50 малооблачно,
-// 50-80 облачно, 80-100 пасмурно.
-function wxIcon(cc){
-  if(cc==null) return "";
-  const sun=`<circle cx="60" cy="60" r="26" fill="${WX_ORANGE}"/>`+
-    Array.from({length:8},(_,i)=>{const a=i*Math.PI/4;
-      const x1=60+Math.cos(a)*34,y1=60+Math.sin(a)*34,
-            x2=60+Math.cos(a)*48,y2=60+Math.sin(a)*48;
-      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${WX_ORANGE}" stroke-width="5" stroke-linecap="round"/>`;}).join("");
-  const cloudBig=`<path d="M28 88 a22 22 0 0 1 4-43 a30 30 0 0 1 58 6 a20 20 0 0 1 -4 37 z" fill="${WX_INK}"/>`;
-  const cloudSm=`<path d="M40 96 a16 16 0 0 1 3-31 a22 22 0 0 1 42 4 a15 15 0 0 1 -3 27 z" fill="${WX_INK}"/>`;
-  let inner;
-  if(cc<20)       inner=sun;                                   // ясно
-  else if(cc<50)  inner=`<g transform="translate(-14,-14) scale(.8)">${sun}</g>${cloudSm}`; // солнце за облаком
-  else if(cc<80)  inner=cloudBig;                              // облачно
-  else            inner=`<g opacity=".55" transform="translate(-16,10)">${cloudSm}</g>${cloudBig}`; // пасмурно
-  return `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
-}
-
-function wxTick(){
-  const d=new Date();
-  const hh=String(d.getHours()).padStart(2,"0");
-  const mm=String(d.getMinutes()).padStart(2,"0");
-  const el=document.getElementById("wx-time");
-  if(el) el.textContent=hh+":"+mm;
-}
-
-async function wxLoad(){
-  const off=-new Date().getTimezoneOffset()/60;
-  try{
-    const r=await fetch("/api/widget/weather?tz_offset="+off);
-    const d=await r.json();
-    document.getElementById("wx-city").textContent=d.city||"—";
-    if(d.temp!=null){
-      document.getElementById("wx-temp").textContent=Math.round(d.temp)+"°";
-      const cc=d.cloud_cover;
-      let label = cc==null?"":cc<20?"ясно":cc<50?"малооблачно":cc<80?"облачно":"пасмурно";
-      document.getElementById("wx-sub").textContent=
-        (cc!=null?label+" · "+cc+"%":"")+(d.source==="stale"?" · кеш":"");
-      document.getElementById("wx-sky").innerHTML=wxIcon(cc);
-    }else{
-      // отказ API — прочерк по погоде, время идёт
-      document.getElementById("wx-temp").textContent="—";
-      document.getElementById("wx-sub").textContent="погода недоступна";
-      document.getElementById("wx-sky").innerHTML="";
-    }
-  }catch(e){
-    document.getElementById("wx-temp").textContent="—";
-    document.getElementById("wx-sub").textContent="ошибка сети";
-  }
-}
-
-wxTick(); setInterval(wxTick, 1000*20);   // время локально, обновляем часто
-wxLoad(); setInterval(wxLoad, 1800*1000); // погода раз в 30 мин
 
 loadStats();
 loadArticles(1);

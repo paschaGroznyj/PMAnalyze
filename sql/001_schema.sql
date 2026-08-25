@@ -36,15 +36,12 @@ ALTER TABLE process_mining.papers_metadata ADD COLUMN IF NOT EXISTS created_at T
 ALTER TABLE process_mining.papers_metadata ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE process_mining.papers_metadata ADD COLUMN IF NOT EXISTS llm_status TEXT DEFAULT 'new';
 
--- ОБНУЛЕНИЕ: все флаги опущены, ревью нет
-UPDATE process_mining.papers_metadata SET
-  is_relevant         = FALSE,
-  review_flag         = FALSE,
-  relevance_score     = NULL,
-  relevance_reasoning = NULL,
-  category            = NULL,
-  processed_at        = NULL,
-  llm_status          = 'new';
+-- БОЕВЫЕ ДАННЫЕ СОХРАНЯЕМ: is_relevant / relevance_score / category / processed_at не трогаем.
+-- Уже обработанным (processed_at IS NOT NULL) выставляем llm_status='done',
+-- чтобы пайплайн не переоценивал их заново.
+UPDATE process_mining.papers_metadata
+  SET llm_status = 'done'
+  WHERE processed_at IS NOT NULL;
 
 -- Уникальность источника
 CREATE UNIQUE INDEX IF NOT EXISTS uq_papers_source_extid
@@ -53,6 +50,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_papers_source_extid
 CREATE INDEX IF NOT EXISTS idx_papers_llm_status ON process_mining.papers_metadata (llm_status);
 CREATE INDEX IF NOT EXISTS idx_papers_is_relevant ON process_mining.papers_metadata (is_relevant);
 CREATE INDEX IF NOT EXISTS idx_papers_date_sub ON process_mining.papers_metadata (date_sub);
+
+-- ============================================================
+-- id должен быть UNIQUE, иначе FK reviews.article_id -> papers_metadata(id) не создастся.
+-- PK стоит на external_id, поэтому добавляем отдельное уникальное ограничение на id.
+-- ============================================================
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'uq_papers_id' AND conrelid = 'process_mining.papers_metadata'::regclass
+  ) THEN
+    ALTER TABLE process_mining.papers_metadata ADD CONSTRAINT uq_papers_id UNIQUE (id);
+  END IF;
+END$$;
 
 -- ============================================================
 -- Ревью: только markdown (review_html не храним, рендерим md на фронте)

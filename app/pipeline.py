@@ -16,6 +16,8 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
+from app.search import embed_text, EMBED_MODEL, TS_CONFIG
+
 
 def _to_date(value):
     """Парсит строку/дату в datetime.date для asyncpg ($4 date_sub).
@@ -659,14 +661,45 @@ class PMAnalyzePipeline:
 
     async def _save_review(self, aid: int, review_md: str):
         async with self.pool.acquire() as con:
-            await con.execute(
+            review_id = await con.fetchval(
                 """INSERT INTO process_mining.reviews (article_id, review_md, model_name)
                    VALUES ($1,$2,$3)
                    ON CONFLICT (article_id) DO UPDATE
-                   SET review_md=EXCLUDED.review_md, model_name=EXCLUDED.model_name, created_at=now()""",
+                   SET review_md=EXCLUDED.review_md, model_name=EXCLUDED.model_name, created_at=now()
+                   RETURNING id""",
                 aid, review_md, self.settings.review_model,
             )
             await con.execute(
                 "UPDATE process_mining.papers_metadata SET review_flag=TRUE, updated_at=now() WHERE id=$1",
                 aid,
             )
+
+        # После успешного ревью сразу векторизуем и сохраняем в review_embeddings.
+        await self._upsert_review_embedding(aid, int(review_id), review_md)
+
+    async def _upsert_review_embedding(self, aid: int, review_id: int, review_md: str):
+        text = (review_md or "").strip()
+        if not text:
+            return
+        try:
+            emb = await embed_text(text[:30000])
+            vec_lit = "[" + ",".join(f"{x:.7f}" for x in emb) + "]"
+            async with self.pool.acquire() as con:
+                await con.execute(
+                    """
+                    INSERT INTO process_mining.review_embeddings
+                        (article_id, review_id, content, embedding, tsv, model, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4::vector, to_tsvector($6, $3), $5, now(), now())
+                    ON CONFLICT (article_id) DO UPDATE SET
+                        review_id = EXCLUDED.review_id,
+                        content   = EXCLUDED.content,
+                        embedding = EXCLUDED.embedding,
+                        tsv       = EXCLUDED.tsv,
+                        model     = EXCLUDED.model,
+                        updated_at = now()
+                    """,
+                    aid, review_id, text, vec_lit, EMBED_MODEL, TS_CONFIG,
+                )
+        except Exception as e:
+            # Не валим пайплайн из-за сбоя эмбеддинга, ревью уже сохранено.
+            print(f"[pmanalyze] embedding upsert error article_id={aid}: {type(e).__name__}: {e}")

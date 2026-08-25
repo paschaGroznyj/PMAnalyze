@@ -387,8 +387,9 @@ async def _w_fetch(lat: float, lon: float):
 
 
 @app.get("/api/widget/weather")
-async def widget_weather(tz_offset: int = 3):
-    city, lat, lon = _W_CITY_BY_OFFSET.get(tz_offset, _W_FALLBACK)
+async def widget_weather(tz_offset: float = 3):
+    tz_key = int(round(tz_offset))
+    city, lat, lon = _W_CITY_BY_OFFSET.get(tz_key, _W_FALLBACK)
     ck = (round(lat, 4), round(lon, 4))
     now = time.time()
     entry = _w_cache.get(ck)

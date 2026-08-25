@@ -383,7 +383,7 @@
       <div class="chip" data-p="quarter">за квартал</div>
     </div>
     <label>Email получателя</label>
-    <input type="email" id="digest-email" placeholder="name@sberbank.ru">
+    <input type="email" id="digest-email" placeholder="name@gmail.com">
     <div class="foot">
       <button class="btn" id="digest-cancel">отмена</button>
       <button class="btn accent" id="digest-send" style="flex:1">отправить</button>
@@ -790,16 +790,35 @@ function wxIcon(cc){
   return `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
 }
 
+const WX_KNOWN_OFFSETS = new Set([3,4,5]);
+let WX_LAST_OFFSET = 3;
+
+function _moscowTimeHHMM(){
+  const parts = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit", hour12: false
+  }).formatToParts(new Date());
+  const hh = (parts.find(p=>p.type==="hour")||{}).value || "--";
+  const mm = (parts.find(p=>p.type==="minute")||{}).value || "--";
+  return hh+":"+mm;
+}
+
 function wxTick(){
-  const d=new Date();
-  const hh=String(d.getHours()).padStart(2,"0");
-  const mm=String(d.getMinutes()).padStart(2,"0");
   const el=document.getElementById("wx-time");
-  if(el) el.textContent=hh+":"+mm;
+  if(!el) return;
+  if(WX_KNOWN_OFFSETS.has(WX_LAST_OFFSET)){
+    const d=new Date();
+    const hh=String(d.getHours()).padStart(2,"0");
+    const mm=String(d.getMinutes()).padStart(2,"0");
+    el.textContent=hh+":"+mm;
+  }else{
+    el.textContent=_moscowTimeHHMM();
+  }
 }
 
 async function wxLoad(){
-  const off=-new Date().getTimezoneOffset()/60;
+  const rawOff=-new Date().getTimezoneOffset()/60;
+  const off=Math.round(rawOff);
+  WX_LAST_OFFSET = off;
   try{
     const r=await fetch("/api/widget/weather?tz_offset="+off);
     const d=await r.json();

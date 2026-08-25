@@ -1,45 +1,66 @@
 # PMAnalyze
 
-Сервис аналитики статей по Process Mining: еженедельный сбор -> оценка релевантности
-+ категория (1 LLM-запрос) -> чтение первых 4 стр. PDF -> генерация ревью (markdown).
+Сервис аналитики статей по Process Mining: сбор статей, генерация ревью и гибридный поиск по базе ревью.
 
-## Пайплайн
-1. Крон (раз в неделю, пн 12:00 МСК) дергает `POST catchpm-browser:9333/api/parser/run`
-   -> JSON метаданных статей (arxiv API/HTML, fluxicon, google scholar).
-2. Upsert в `process_mining.papers_metadata` (уникальность source+external_id).
-3. Для каждой new-статьи: LLM оценивает релевантность (4 критерия, порог 0.6)
-   и сразу выдаёт категорию — одним JSON.
-4. Для релевантных: `POST /api/pdf/fulltext` (первые 4 стр.) -> LLM формирует ревью в md.
-5. Ревью пишется в `process_mining.reviews.review_md` (только markdown, рендер на фронте).
+## Что делает сервис
+1. Сбор метаданных статей (через `catchpm-browser`) и запись в `process_mining.papers_metadata`.
+2. Оценка релевантности и категоризация статей LLM.
+3. Генерация ревью (Markdown) и запись в `process_mining.reviews`.
+4. Векторизация ревью и хранение эмбеддингов в `process_mining.review_embeddings`.
+5. Быстрый и гибридный поиск по ревью + опциональное LLM-саммари найденного.
 
-## Схема (process_mining)
-- `papers_metadata` — метаданные + флаги (все обнулены на старте)
-- `reviews` — ревью в markdown (1:1 к статье)
-- `parser_runs` — журнал запусков
-
-## API
+## Ключевые API
+### Pipeline
 - `POST /api/pipeline/run` — полный цикл (фон)
-- `POST /api/pipeline/process?limit=50` — обработать уже собранные (без сбора)
-- `GET  /api/articles?only_relevant=true` — список
-- `GET  /api/articles/{id}/review` — ревью статьи
-- `GET  /api/runs` / `GET /api/stats`
+- `POST /api/pipeline/process?limit=50` — обработать уже собранные статьи
+
+### Контент
+- `GET /api/articles?only_relevant=true` — список статей
+- `GET /api/articles/{id}/review` — ревью по статье
+- `GET /api/runs` — история запусков
+- `GET /api/stats` — общая статистика пайплайна
+
+### Поиск
+- `GET /api/search/quick?q=&limit=` — live typeahead (ILIKE + pg_trgm)
+- `POST /api/search/hybrid` — BM25 + vector search (RRF fusion)
+- `GET /api/search/stats` — статистика векторного индекса
+
+## Текущее состояние поиска
+- Модель эмбеддингов: `Qwen/Qwen3-VL-Embedding-8B`
+- Размерность вектора: `4096`
+- В таблице `review_embeddings`: `119` векторизованных ревью
+- Поддержка `llm_summary=true` в hybrid-поиске (модель sammary по умолчанию: `anthropic/claude-haiku-4.5`)
+
+## Схема БД (process_mining)
+- `papers_metadata` — метаданные статей и служебные флаги
+- `reviews` — markdown-ревью (1:1 к статье)
+- `review_embeddings` — текст ревью + embedding vector(4096) + tsv
+- `parser_runs` — журнал запусков пайплайна
 
 ## Архитектура
-Микросервисная. PMAnalyze — только http-клиент: всё "железо" парсинга
-(httpx / BeautifulSoup / playwright / pypdf) живёт в сервисе-парсере
-`catchpm-browser` (порт 9333). PMAnalyze дёргает его по докер-сети:
-`_collect()` -> `POST /api/parser/run`, `_fetch_pdf_text()` -> `POST /api/pdf/fulltext`.
-Никакого playwright/pypdf и золота внутри PMAnalyze нет.
+PMAnalyze не содержит тяжёлый парсинг внутри себя: парсинг и PDF-извлечение выполняются через `catchpm-browser` по HTTP:
+- `_collect()` -> `POST /api/parser/run`
+- `_fetch_pdf_text()` -> `POST /api/pdf/fulltext`
 
-## Донор
-Логика перенесена из `catchpm-chat-v6:/app/article_pipeline.py`.
-Парсер-эндпоинты `/api/parser/run` и `/api/pdf/fulltext` вынесены в отдельный
-подключаемый патч `browser_parser_patch/pm_articles_router.py` — устанавливается
-в сервис `catchpm-browser` (см. `browser_parser_patch/README.md`), gold-логика не затронута.
+## Инфраструктура Postgres + pgvector
+Для закрепления расширения в образе добавлены:
+- `infra/postgres/Dockerfile.pgvector`
+- `infra/postgres/init-pgvector.sql`
 
-## Инициализация БД
-Применить `sql/001_schema.sql` (дропает бесполезные колонки, оставляет category,
-обнуляет флаги, создаёт reviews/parser_runs).
+Рекомендуемый образ БД:
+- `catchpm-postgres:pgvector-0.8.0`
 
-## UI
-Шаблон фронта будет добавлен позже (templates/).
+Важно: `init-pgvector.sql` исполняется только при первой инициализации кластера (пустой `PGDATA`). Для существующего тома расширение создаётся один раз вручную:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+## Локальный запуск
+```bash
+docker build -t pmanalyze:local .
+docker run --rm -p 18021:8000 --env-file .env pmanalyze:local
+```
+
+## Зависимости
+См. `requirements.txt`.

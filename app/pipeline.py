@@ -400,15 +400,17 @@ class PMAnalyzePipeline:
             print(f"[pmanalyze] page fetch error: {e}")
             return ""
 
-    async def _fetch_pdf_text_via_parser(self, urls: list[str], max_pages: int = 6, max_chars: int = 24000) -> str:
-        """Пробует вытащить текст PDF через catchpm-browser /api/pdf/fulltext."""
+    async def _fetch_pdf_text_via_parser(self, urls: list[str], max_pages: int = 6, max_chars: int = 24000) -> tuple[str, str, str]:
+        """Пробует вытащить текст PDF через catchpm-browser /api/pdf/fulltext.
+        Возвращает: (text, used_url, method)
+        """
         clean = []
         for u in (urls or []):
             u = (u or "").strip()
             if u and u.startswith("http") and u not in clean:
                 clean.append(u)
         if not clean:
-            return ""
+            return "", "", ""
 
         headers = {"Content-Type": "application/json"}
         if self.settings.parser_api_key:
@@ -428,10 +430,12 @@ class PMAnalyzePipeline:
             for row in (data.get("results") or []):
                 txt = (row.get("text") or "").strip()
                 if row.get("ok") and txt:
-                    return txt[:24000]
+                    used_url = (row.get("used_url") or row.get("norm_url") or row.get("url") or "").strip()
+                    method = (row.get("method") or "").strip()
+                    return txt[:24000], used_url, method
         except Exception as e:
             print(f"[pmanalyze] parser pdf/fulltext error: {e}")
-        return ""
+        return "", "", ""
 
     async def _download_pdf_text(self, pdf_url: str) -> str:
         """Скачивание бинарного PDF и извлечение текста (fallback для yandex/web links)."""
@@ -607,14 +611,22 @@ class PMAnalyzePipeline:
                         ])
                     if pdf_url:
                         pdf_candidates.append(pdf_url)
-                    page_text = await self._fetch_pdf_text_via_parser(pdf_candidates)
+                    page_text, parser_used_url, parser_method = await self._fetch_pdf_text_via_parser(pdf_candidates)
+                    if page_text and parser_used_url:
+                        source_url = parser_used_url
+                    if page_text and source_url != original_source_url:
+                        print(f"[pmanalyze] source fallback success article_id={art.get('id')} from={original_source_url} to={source_url} via={parser_method or 'parser_pdf_fulltext'}")
                     if not page_text and ar:
                         page_text = await self._download_pdf_text(f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={ar}")
                         if page_text:
                             source_url = f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={ar}"
                 else:
                     # Для остальных источников тоже пробуем parser PDF endpoint перед прямой загрузкой
-                    page_text = await self._fetch_pdf_text_via_parser([pdf_url, source_url])
+                    page_text, parser_used_url, parser_method = await self._fetch_pdf_text_via_parser([pdf_url, source_url])
+                    if page_text and parser_used_url:
+                        source_url = parser_used_url
+                    if page_text and source_url != original_source_url:
+                        print(f"[pmanalyze] source fallback success article_id={art.get('id')} from={original_source_url} to={source_url} via={parser_method or 'parser_pdf_fulltext'}")
 
                 if not page_text:
                     page_text = await self._download_pdf_text(pdf_url)

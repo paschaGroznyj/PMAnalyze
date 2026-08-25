@@ -1,10 +1,13 @@
 """PMAnalyze API: управление еженедельным пайплайном + дашборд + дайджест."""
 import os
+import asyncio
 import json
 import time
+import logging
 import asyncpg
 import httpx
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -27,19 +30,55 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_LOGIN = os.getenv("SMTP_LOGIN", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
+# Digest subscribers / schedule
+DIGEST_SUBSCRIBERS = os.getenv("DIGEST_SUBSCRIBERS", "")
+DIGEST_ENABLED = os.getenv("DIGEST_ENABLED", "1").lower() in ("1", "true", "yes", "on")
+DIGEST_WEEKLY_DOW_MSK = int(os.getenv("DIGEST_WEEKLY_DOW_MSK", "1"))      # 1=вторник
+DIGEST_WEEKLY_HOUR_MSK = int(os.getenv("DIGEST_WEEKLY_HOUR_MSK", "10"))   # 10:00 MSK
+DIGEST_WEEKLY_MINUTE_MSK = int(os.getenv("DIGEST_WEEKLY_MINUTE_MSK", "0"))
+
 pipeline: PMAnalyzePipeline | None = None
 pool: asyncpg.Pool | None = None
 mailer: EmailSender | None = None
+digest_task: asyncio.Task | None = None
+digest_stop: asyncio.Event = asyncio.Event()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pipeline, pool, mailer
+    global pipeline, pool, mailer, digest_task
     pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=5)
     pipeline = PMAnalyzePipeline(pool, Settings())
     mailer = EmailSender(SMTP_HOST, SMTP_PORT, SMTP_LOGIN, SMTP_PASSWORD)
+
+    async with pool.acquire() as con:
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.digest_recipients (
+                id BIGSERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
     await pipeline.start()
+
+    digest_stop.clear()
+    if DIGEST_ENABLED:
+        digest_task = asyncio.create_task(_digest_scheduler_loop())
+
     yield
+
+    digest_stop.set()
+    if digest_task:
+        digest_task.cancel()
+        try:
+            await digest_task
+        except Exception:
+            pass
+        digest_task = None
+
     if pipeline:
         await pipeline.stop()
     if pool:
@@ -47,6 +86,125 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PMAnalyze", lifespan=lifespan)
+
+
+class _DropNoisyProgressEndpoint(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return "/api/run/reviews/progress" not in msg
+
+
+logging.getLogger("uvicorn.access").addFilter(_DropNoisyProgressEndpoint())
+
+
+def _parse_emails_csv(raw: str) -> list[str]:
+    out, seen = [], set()
+    for t in (raw or "").replace(";", ",").split(","):
+        e = t.strip()
+        if not e or "@" not in e:
+            continue
+        k = e.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+    return out
+
+
+async def _db_digest_recipients() -> list[str]:
+    async with pool.acquire() as con:
+        rows = await con.fetch("SELECT email FROM process_mining.digest_recipients WHERE enabled=TRUE ORDER BY id")
+    return [r["email"] for r in rows if r.get("email")]
+
+
+async def _effective_digest_recipients() -> list[str]:
+    env_list = _parse_emails_csv(DIGEST_SUBSCRIBERS)
+    db_list = await _db_digest_recipients()
+    out, seen = [], set()
+    for e in env_list + db_list:
+        k = e.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+    return out
+
+
+def _subject_for_preset(preset: str) -> str:
+    return f"PMAnalyze — Дайджест Process Mining ({PRESET_TITLE.get(preset, preset)})"
+
+
+async def _build_digest_payload(preset: str) -> tuple[dict, str]:
+    data = await collect_digest(pool, preset)
+    md_full = render_reviews_markdown(data)
+    obs_res = upload_markdown_to_obs(
+        md_full,
+        preset,
+        data.get("date_from_local"),
+        data.get("date_to_local"),
+    )
+    data["full_list_url"] = obs_res.get("public_url") if obs_res.get("ok") else ""
+    html = render_digest_html(data)
+    return data, html
+
+
+async def _send_digest_to_subscribers(preset: str = "sub_week") -> dict:
+    recipients = await _effective_digest_recipients()
+    if not recipients:
+        return {"ok": False, "error": "no_recipients"}
+    if not SMTP_LOGIN or not SMTP_PASSWORD:
+        return {"ok": False, "error": "smtp_not_configured"}
+
+    data, html = await _build_digest_payload(preset)
+    subject = _subject_for_preset(preset)
+
+    sent, failed = [], []
+    for email in recipients:
+        res = mailer.send_digest([email], subject, html)
+        if res.get("status") == "ok":
+            sent.append(email)
+        else:
+            failed.append({"email": email, "error": res.get("message", "send_failed")})
+        await asyncio.sleep(0.4)
+
+    return {
+        "ok": len(sent) > 0,
+        "sent": sent,
+        "failed": failed,
+        "period": {
+            "from": str(data.get("date_from_local")),
+            "to": str(data.get("date_to_local")),
+        },
+        "articles": len(data.get("articles") or []),
+    }
+
+
+def _seconds_to_next_digest_run_msk() -> int:
+    msk = timezone(timedelta(hours=3))
+    now = datetime.now(msk)
+    dow = max(0, min(6, int(DIGEST_WEEKLY_DOW_MSK)))
+    target = now.replace(hour=int(DIGEST_WEEKLY_HOUR_MSK), minute=int(DIGEST_WEEKLY_MINUTE_MSK), second=0, microsecond=0)
+    days_ahead = (dow - now.weekday()) % 7
+    target = target + timedelta(days=days_ahead)
+    if target <= now:
+        target = target + timedelta(days=7)
+    return max(1, int((target - now).total_seconds()))
+
+
+async def _digest_scheduler_loop():
+    while not digest_stop.is_set():
+        wait_s = _seconds_to_next_digest_run_msk()
+        try:
+            await asyncio.wait_for(digest_stop.wait(), timeout=wait_s)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            res = await _send_digest_to_subscribers("sub_week")
+            print(f"[pmanalyze] digest scheduler result: {res}")
+        except Exception as e:
+            print(f"[pmanalyze] digest scheduler error: {e}")
 
 
 def _normalize_authors_payload(raw):
@@ -243,7 +401,7 @@ async def run_reviews_progress():
 
 # ---------------- Дайджест на почту ----------------
 class DigestReq(BaseModel):
-    preset: str = "week"          # week | month | quarter
+    preset: str = "week"          # week | month | quarter | sub_week
     email: str
 
 
@@ -286,6 +444,29 @@ async def digest_send(req: DigestReq):
             },
         }
     return JSONResponse({"ok": False, "error": res.get("message", "send_failed"), "obs": obs_res}, status_code=500)
+
+
+@app.get("/api/digest/subscribers")
+async def digest_subscribers():
+    eff = await _effective_digest_recipients()
+    return {
+        "ok": True,
+        "env_count": len(_parse_emails_csv(DIGEST_SUBSCRIBERS)),
+        "db_count": len(await _db_digest_recipients()),
+        "total": len(eff),
+        "emails": eff,
+    }
+
+
+@app.post("/api/digest/send/subscribers")
+async def digest_send_subscribers(preset: str = "sub_week"):
+    if preset not in PRESET_TITLE:
+        return JSONResponse({"ok": False, "error": "bad_preset"}, status_code=400)
+    res = await _send_digest_to_subscribers(preset)
+    code = 200 if res.get("ok") else 500
+    return JSONResponse(res, status_code=code)
+
+
 
 
 # ---------------- Существующие данные-эндпоинты ----------------
@@ -355,16 +536,54 @@ async def get_review(article_id: int):
 
 
 # ---------------- Weather widget ----------------
-# offset (часы от UTC) -> (город, lat, lon). +3 MSK -> Москва, +4 Самара, +5 Екб.
+# offset (часы от UTC) -> (город, lat, lon). Поддерживаем крупные города по миру.
 _W_CITY_BY_OFFSET = {
-    3: ("Москва", 55.7522, 37.6156),
-    4: ("Самара", 53.1959, 50.1000),
-    5: ("Екатеринбург", 56.8389, 60.6057),
+    -12.0: ("Бейкер-Айленд", 0.1936, -176.4769),
+    -11.0: ("Паго-Паго", -14.2756, -170.7020),
+    -10.0: ("Гонолулу", 21.3069, -157.8583),
+    -9.0: ("Анкоридж", 61.2181, -149.9003),
+    -8.0: ("Лос-Анджелес", 34.0522, -118.2437),
+    -7.0: ("Денвер", 39.7392, -104.9903),
+    -6.0: ("Чикаго", 41.8781, -87.6298),
+    -5.0: ("Нью-Йорк", 40.7128, -74.0060),
+    -4.0: ("Сантьяго", -33.4489, -70.6693),
+    -3.0: ("Сан-Паулу", -23.5558, -46.6396),
+    -2.0: ("Южная Георгия", -54.4296, -36.5879),
+    -1.0: ("Азорские о-ва", 37.7412, -25.6756),
+     0.0: ("Лондон", 51.5074, -0.1278),
+     1.0: ("Берлин", 52.5200, 13.4050),
+     2.0: ("Киев", 50.4501, 30.5234),
+     3.0: ("Москва", 55.7522, 37.6156),
+     3.5: ("Тегеран", 35.6892, 51.3890),
+     4.0: ("Самара", 53.1959, 50.1000),
+     4.5: ("Кабул", 34.5553, 69.2075),
+     5.0: ("Екатеринбург", 56.8389, 60.6057),
+     5.5: ("Нью-Дели", 28.6139, 77.2090),
+     5.75: ("Катманду", 27.7172, 85.3240),
+     6.0: ("Омск", 54.9885, 73.3242),
+     6.5: ("Янгон", 16.8409, 96.1735),
+     7.0: ("Красноярск", 56.0153, 92.8932),
+     8.0: ("Пекин", 39.9042, 116.4074),
+     8.75: ("Юкла", 62.8864, 132.7968),
+     9.0: ("Токио", 35.6762, 139.6503),
+     9.5: ("Дарвин", -12.4634, 130.8456),
+    10.0: ("Сидней", -33.8688, 151.2093),
+    11.0: ("Владивосток", 43.1155, 131.8855),
+    12.0: ("Окленд", -36.8485, 174.7633),
+    13.0: ("Нукуалофа", -21.1394, -175.2048),
+    14.0: ("Киритимати", 1.8721, -157.4278),
 }
 _W_FALLBACK = ("Москва", 55.7522, 37.6156)
 _W_OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
 _W_TTL = 1800  # 30 минут
 _w_cache: dict = {}  # {(lat,lon): {"data": {...}, "ts": float}}
+
+
+def _w_pick_city_by_offset(tz_offset: float):
+    """Выбираем ближайший поддерживаемый часовой пояс (включая 0.5/0.75)."""
+    keys = list(_W_CITY_BY_OFFSET.keys())
+    nearest = min(keys, key=lambda k: abs(float(k) - float(tz_offset)))
+    return _W_CITY_BY_OFFSET.get(nearest, _W_FALLBACK)
 
 
 async def _w_fetch(lat: float, lon: float):
@@ -388,8 +607,7 @@ async def _w_fetch(lat: float, lon: float):
 
 @app.get("/api/widget/weather")
 async def widget_weather(tz_offset: float = 3):
-    tz_key = int(round(tz_offset))
-    city, lat, lon = _W_CITY_BY_OFFSET.get(tz_key, _W_FALLBACK)
+    city, lat, lon = _w_pick_city_by_offset(tz_offset)
     ck = (round(lat, 4), round(lon, 4))
     now = time.time()
     entry = _w_cache.get(ck)

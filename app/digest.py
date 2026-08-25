@@ -1,7 +1,7 @@
 """Формирование дайджеста PMAnalyze: календарные периоды + email HTML + выгрузка полного markdown в OBS."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, time as dtime
 from html import escape
 from zoneinfo import ZoneInfo
 import os
@@ -10,7 +10,7 @@ import uuid
 from dotenv import load_dotenv
 from pathlib import Path
 
-PRESET_TITLE = {"week": "за неделю", "month": "за месяц", "quarter": "за квартал"}
+PRESET_TITLE = {"week": "за неделю", "month": "за месяц", "quarter": "за квартал", "sub_week": "за 7 дней до прошлого вторника"}
 
 # подхватываем локальный .env (для OBS), если есть
 load_dotenv(Path("/app/.env"))
@@ -29,32 +29,55 @@ CAT_COLORS = {
 
 
 def period_bounds(preset: str, tz_name: str = "Europe/Moscow"):
-    """Календарные границы периода:
-    week    -> c понедельника 00:00
-    month   -> c 1-го числа 00:00
-    quarter -> c 1-го числа первого месяца квартала 00:00
-    Конец периода = текущий момент.
+    """Границы периода для дайджеста.
+
+    week     -> текущая календарная неделя (с понедельника 00:00 до now)
+    month    -> текущий календарный месяц (с 1-го числа 00:00 до now)
+    quarter  -> текущий календарный квартал (с 1-го числа квартала 00:00 до now)
+    sub_week -> 7 полных дней ДО прошлого вторника (включая оба края):
+                [прошлый вторник-7д ; прошлый вторник-1д], Europe/Moscow.
     """
     tz = ZoneInfo(tz_name)
     now_local = datetime.now(tz)
 
     p = (preset or "week").lower()
-    if p == "month":
+
+    if p == "sub_week":
+        # Вторник в Python weekday() == 1.
+        # "Прошлый вторник" = строго до текущей даты:
+        # если сегодня вторник -> берём вторник прошлой недели.
+        today = now_local.date()
+        days_since_tue = (today.weekday() - 1) % 7
+        if days_since_tue == 0:
+            days_since_tue = 7
+        prev_tuesday = today - timedelta(days=days_since_tue)
+
+        end_day = prev_tuesday - timedelta(days=1)     # понедельник перед прошлым вторником
+        start_day = end_day - timedelta(days=6)        # ровно 7 дней
+
+        start_local = datetime.combine(start_day, dtime.min, tz)
+        end_local = datetime.combine(end_day, dtime.max, tz)
+
+    elif p == "month":
         start_local = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_local = now_local
+
     elif p == "quarter":
         q_start_month = ((now_local.month - 1) // 3) * 3 + 1
         start_local = now_local.replace(month=q_start_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_local = now_local
+
     else:
         # week
         start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_local = start_local.replace(day=now_local.day)  # no-op, для явности
         start_local = start_local.fromordinal(start_local.toordinal() - now_local.weekday()).replace(
             tzinfo=tz, hour=0, minute=0, second=0, microsecond=0
         )
+        end_local = now_local
 
     start_utc = start_local.astimezone(timezone.utc)
-    end_utc = now_local.astimezone(timezone.utc)
-    return start_utc, end_utc, start_local, now_local
+    end_utc = end_local.astimezone(timezone.utc)
+    return start_utc, end_utc, start_local, end_local
 
 
 def _normalize_authors(authors):
@@ -146,15 +169,15 @@ async def collect_digest(pool, preset: str) -> dict:
 
 
 def _review_excerpt_2_3(md: str) -> str:
-    """Сокращаем примерно на 1/3 (оставляем ~2/3), сохраняя переносы строк и структуру markdown."""
+    """Сильно сокращаем ревью: оставляем примерно 1/3 исходного текста."""
     if not md:
         return ""
     txt = md.replace("\r", "").strip()
     if not txt:
         return ""
 
-    keep = int(len(txt) * 0.66)
-    keep = max(600, min(keep, 4200))
+    keep = int(len(txt) * 0.33)
+    keep = max(280, min(keep, 2100))
     if len(txt) <= keep:
         return txt
 

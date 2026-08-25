@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PMAnalyze — Practice Metrics</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 64 64%27%3E%3Crect width=%2764%27 height=%2764%27 rx=%2712%27 fill=%27%23FFFFFF%27/%3E%3Ctext x=%2732%27 y=%2741%27 text-anchor=%27middle%27 font-family=%27Arial,sans-serif%27 font-size=%2728%27 font-weight=%27700%27 fill=%27%23FF5A1F%27%3EDH%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,900&family=Space+Mono:wght@400;700&family=Archivo:wght@400;600;700&display=swap" rel="stylesheet">
@@ -563,7 +564,7 @@ async function syncReviewsProgress(){
 function startReviewsProgressPoll(){
   if(reviewsProgressPoll) return;
   syncReviewsProgress();
-  reviewsProgressPoll = setInterval(syncReviewsProgress, 1500);
+  reviewsProgressPoll = setInterval(syncReviewsProgress, 5000);
 }
 
 $("#btn-parser").onclick = async e=>{
@@ -790,37 +791,19 @@ function wxIcon(cc){
   return `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
 }
 
-const WX_KNOWN_OFFSETS = new Set([3,4,5]);
-let WX_LAST_OFFSET = 3;
-
-function _moscowTimeHHMM(){
-  const parts = new Intl.DateTimeFormat("ru-RU", {
-    timeZone: "Europe/Moscow", hour: "2-digit", minute: "2-digit", hour12: false
-  }).formatToParts(new Date());
-  const hh = (parts.find(p=>p.type==="hour")||{}).value || "--";
-  const mm = (parts.find(p=>p.type==="minute")||{}).value || "--";
-  return hh+":"+mm;
-}
-
 function wxTick(){
   const el=document.getElementById("wx-time");
   if(!el) return;
-  if(WX_KNOWN_OFFSETS.has(WX_LAST_OFFSET)){
-    const d=new Date();
-    const hh=String(d.getHours()).padStart(2,"0");
-    const mm=String(d.getMinutes()).padStart(2,"0");
-    el.textContent=hh+":"+mm;
-  }else{
-    el.textContent=_moscowTimeHHMM();
-  }
+  const d=new Date();
+  const hh=String(d.getHours()).padStart(2,"0");
+  const mm=String(d.getMinutes()).padStart(2,"0");
+  el.textContent=hh+":"+mm;
 }
 
 async function wxLoad(){
-  const rawOff=-new Date().getTimezoneOffset()/60;
-  const off=Math.round(rawOff);
-  WX_LAST_OFFSET = off;
+  const off = -new Date().getTimezoneOffset()/60; // поддержка 5.5, 5.75 и т.д.
   try{
-    const r=await fetch("/api/widget/weather?tz_offset="+off);
+    const r=await fetch("/api/widget/weather?tz_offset="+encodeURIComponent(off));
     const d=await r.json();
     document.getElementById("wx-city").textContent=d.city||"—";
     if(d.temp!=null){

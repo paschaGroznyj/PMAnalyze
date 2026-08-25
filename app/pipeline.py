@@ -156,6 +156,16 @@ class PMAnalyzePipeline:
             out.append(c)
         return out
 
+    @staticmethod
+    def _normalize_title_key(v: str) -> str:
+        s = (v or "").strip().lower()
+        if not s:
+            return ""
+        s = s.replace(" ", " ")
+        s = re.sub(r"\s+", " ", s)
+        s = s.strip(" .,:;!?\"'`“”‘’()[]{}")
+        return s
+
     # ---------------- lifecycle ----------------
     async def start(self):
         if self._task is None:
@@ -277,13 +287,38 @@ class PMAnalyzePipeline:
             return []
 
     async def _upsert_articles(self, articles: list[dict]) -> list[int]:
+        """Upsert новых статей + фильтрация дублей по нормализованному title.
+
+        Правила:
+        1) Базовый уникальный ключ БД: (source, external_id)
+        2) Доп. фильтр дублей: одинаковый нормализованный title
+           • относительно уже существующих записей в БД
+           • внутри текущего батча парсера
+        """
         new_ids = []
         async with self.pool.acquire() as con:
+            existing_titles_rows = await con.fetch(
+                """
+                SELECT lower(trim(regexp_replace(coalesce(title,''), '\s+', ' ', 'g'))) AS norm_title
+                FROM process_mining.papers_metadata
+                WHERE coalesce(title,'') <> ''
+                """
+            )
+            existing_title_keys = {r['norm_title'] for r in existing_titles_rows if r.get('norm_title')}
+            batch_title_keys = set()
+
             for a in articles:
                 ext = (a.get("external_id") or "").strip()
                 src = (a.get("source") or "").strip()
                 if not ext or not src:
                     continue
+
+                title = (a.get("title") or "").strip()
+                title_key = self._normalize_title_key(title)
+                if title_key and (title_key in existing_title_keys or title_key in batch_title_keys):
+                    # Дубль по заголовку: не вставляем новую запись
+                    continue
+
                 authors = a.get("authors")
                 tags = a.get("tags")
                 row = await con.fetchrow(
@@ -296,7 +331,7 @@ class PMAnalyzePipeline:
                     ON CONFLICT (source, external_id) DO NOTHING
                     RETURNING id
                     """,
-                    ext, src, a.get("title", ""), _to_date(a.get("date_sub")),
+                    ext, src, title, _to_date(a.get("date_sub")),
                     a.get("url_article") or a.get("pdf_url"), a.get("pdf_url"),
                     json.dumps(authors) if authors is not None else None,
                     tags if tags is not None else None,
@@ -304,6 +339,9 @@ class PMAnalyzePipeline:
                 )
                 if row:
                     new_ids.append(int(row["id"]))
+                    if title_key:
+                        existing_title_keys.add(title_key)
+                        batch_title_keys.add(title_key)
         return new_ids
 
     # ---------------- LLM ----------------

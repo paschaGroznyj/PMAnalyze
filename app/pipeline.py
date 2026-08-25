@@ -563,6 +563,7 @@ class PMAnalyzePipeline:
 
         # Ссылка в промпте должна указывать на реальный PDF-документ.
         source_url = pdf_url or url_article
+        original_source_url = source_url
 
         page_text = ""
 
@@ -621,6 +622,10 @@ class PMAnalyzePipeline:
         if not page_text:
             print(f"[pmanalyze] empty content for article_id={art.get('id')} source={art.get('source')} ext={art.get('external_id')}")
             return "", "content_unavailable_or_invalid_source_url"
+
+        # Если пробились через альтернативный URL — исходный невалидный URL помечаем как -1
+        if source_url and original_source_url and source_url != original_source_url:
+            await self._mark_invalid_source_url(int(art.get("id")), original_source_url)
 
         filename = f"{art.get('source','src')}_{art.get('external_id','id')}"
         authors_hint = self._normalize_authors(art.get("authors"))
@@ -829,6 +834,20 @@ class PMAnalyzePipeline:
             await con.execute(
                 "UPDATE process_mining.papers_metadata SET llm_status=$2, updated_at=now(), relevance_reasoning=COALESCE($3, relevance_reasoning) WHERE id=$1",
                 aid, status, err,
+            )
+
+    async def _mark_invalid_source_url(self, aid: int, bad_url: str):
+        """Если удалось прочитать статью через альтернативный URL, помечаем исходный битый URL как -1."""
+        if not bad_url:
+            return
+        async with self.pool.acquire() as con:
+            await con.execute(
+                """UPDATE process_mining.papers_metadata
+                   SET url_article = CASE WHEN url_article=$2 THEN '-1' ELSE url_article END,
+                       pdf_url     = CASE WHEN pdf_url=$2 THEN '-1' ELSE pdf_url END,
+                       updated_at=now()
+                   WHERE id=$1""",
+                aid, bad_url,
             )
 
     async def _save_relevance(self, aid: int, rel: dict):

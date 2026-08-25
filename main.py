@@ -95,7 +95,7 @@ class _DropNoisyProgressEndpoint(logging.Filter):
 
 
 logging.getLogger("uvicorn.access").addFilter(_DropNoisyProgressEndpoint())
-api_logger = logging.getLogger("pmanalyze.api")
+api_logger = logging.getLogger("uvicorn.error")
 
 
 def _parse_emails_csv(raw: str) -> list[str]:

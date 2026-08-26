@@ -77,19 +77,32 @@ class PMParserService:
         self.timeout_http = float(os.getenv("PARSER_HTTP_TIMEOUT_SECONDS", "40"))
         self.timeout_scholar = float(os.getenv("PARSER_SCHOLAR_TIMEOUT_SECONDS", "60"))
 
+    async def _parse_scholar_combined(self, query: str, max_per_source: int, ui_lang: str) -> list["PMArticle"]:
+        """Google Scholar: сначала ScrapingDog API, при пустом результате —
+        fallback на браузерный скрейп."""
+        try:
+            res = await self.parse_scholar_scrapingdog(query, max_per_source)
+        except Exception:
+            res = []
+        if res:
+            return res
+        return await self.parse_google_scholar_browser(query, max_per_source, ui_lang)
+
     async def collect_all_sources(self, query: str, max_per_source: int, ui_lang: str) -> dict:
         tasks = [
             self.parse_arxiv_api(query, max_per_source),
             self.parse_arxiv_html(query, max_per_source),
+            self.parse_crossref(query, max_per_source),
+            self.parse_core_api(query, max_per_source),
             self.parse_fluxicon(max_per_source),
-            self.parse_google_scholar_browser(query, max_per_source, ui_lang),
+            self._parse_scholar_combined(query, max_per_source, ui_lang),
         ]
         chunks = await asyncio.gather(*tasks, return_exceptions=True)
 
         out: list[PMArticle] = []
         source_stats: dict[str, int] = {}
         errors: dict[str, str] = {}
-        sources = ["arxiv_api", "arxiv_html", "fluxicon", "google_scholar"]
+        sources = ["arxiv_api", "arxiv_html", "crossref", "core_api", "fluxicon", "google_scholar"]
 
         for src, chunk in zip(sources, chunks):
             if isinstance(chunk, Exception):
@@ -218,6 +231,443 @@ class PMParserService:
                 )
             )
         return out
+    async def parse_crossref(self, query: str, max_per_source: int) -> list[PMArticle]:
+        # Crossref лучше работает на коротких тематических запросах,
+        # чем на длинных OR-выражениях.
+        topical_queries = [
+            "process mining",
+            "event log process mining",
+            "conformance checking",
+            "process discovery",
+            "task mining",
+            "object-centric event log",
+            "business process intelligence",
+            "process mining automation",
+        ]
+        if query and len(query.strip()) <= 80:
+            topical_queries.insert(0, query.strip())
+
+        allowlist = (
+            "process mining", "event log", "event logs", "conformance checking",
+            "process discovery", "task mining", "object-centric", "ocel",
+            "process model", "business process", "workflow mining", "process intelligence",
+            "process analytics", "rpa", "robotic process automation",
+        )
+        blocklist = (
+            "project management", "product management", "pm2.5", "particulate matter",
+            "preventive maintenance", "predictive maintenance", "portfolio management",
+        )
+
+        def _is_pm_candidate(title: str, abstract: str, subjects: list[str]) -> bool:
+            txt = f"{title} {abstract} {' '.join(subjects)}".lower()
+            if any(b in txt for b in blocklist):
+                return False
+            score = 0
+            score += sum(1 for k in allowlist if k in txt)
+            # Минимум 1 сигнал в title/abstract/subject
+            return score >= 1
+
+        rows_per_query = max(15, min(int(max_per_source) * 4, 120))
+        url = "https://api.crossref.org/works"
+        mailto = os.getenv("CROSSREF_MAILTO", "pisoldatkin@sberbank.ru").strip()
+        headers = {
+            "User-Agent": f"catchpm-parser-service/1.1 (mailto:{mailto})",
+            "Accept": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout_http, follow_redirects=True) as client:
+            tasks = []
+            for tq in topical_queries:
+                params = {
+                    "query.bibliographic": tq,
+                    "rows": str(rows_per_query),
+                    "sort": "published",
+                    "order": "desc",
+                    "select": "DOI,title,abstract,author,published-print,published-online,issued,URL,link,type,subject",
+                    "filter": "from-pub-date:2018-01-01",
+                }
+                tasks.append(client.get(url, params=params, headers=headers))
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+        out: list[PMArticle] = []
+        for resp in responses:
+            if isinstance(resp, Exception):
+                continue
+            try:
+                resp.raise_for_status()
+                data = resp.json() or {}
+            except Exception:
+                continue
+
+            items = ((data.get("message") or {}).get("items") or [])
+            for it in items:
+                doi = (it.get("DOI") or "").strip()
+                title_raw = (it.get("title") or [])
+                title = ""
+                if isinstance(title_raw, list) and title_raw:
+                    title = _pm_re.sub(r"\s+", " ", str(title_raw[0])).strip()
+                elif isinstance(title_raw, str):
+                    title = _pm_re.sub(r"\s+", " ", title_raw).strip()
+                if not title:
+                    continue
+
+                # Дата публикации. Приоритет — фактически опубликованные даты
+                # (online/issued) над плановым published-print, который у Crossref
+                # часто указывает на будущие выпуски журналов.
+                _today = datetime.now(timezone.utc).date()
+                _parsed_dates = []
+                for k in ("published-online", "issued", "published-print"):
+                    dp = (it.get(k) or {}).get("date-parts") or []
+                    if dp and isinstance(dp[0], list) and dp[0]:
+                        y = int(dp[0][0])
+                        m = int(dp[0][1]) if len(dp[0]) > 1 else 1
+                        d = int(dp[0][2]) if len(dp[0]) > 2 else 1
+                        try:
+                            _parsed_dates.append(datetime(y, m, d, tzinfo=timezone.utc).date())
+                        except Exception:
+                            pass
+
+                # Берём самую свежую НЕ будущую дату; если все даты в будущем —
+                # статья считается ещё не опубликованной и отбрасывается.
+                _valid_dates = [dt for dt in _parsed_dates if dt <= _today]
+                if _parsed_dates and not _valid_dates:
+                    continue
+                date_sub = max(_valid_dates).strftime("%Y-%m-%d") if _valid_dates else ""
+
+                authors_list = []
+                for a in (it.get("author") or []):
+                    g = (a.get("given") or "").strip()
+                    f = (a.get("family") or "").strip()
+                    full = (g + " " + f).strip()
+                    if full:
+                        authors_list.append(full)
+
+                pdf_url = (it.get("URL") or "").strip()
+                for l in (it.get("link") or []):
+                    ct = (l.get("content-type") or "").lower()
+                    if "pdf" in ct and l.get("URL"):
+                        pdf_url = l.get("URL")
+                        break
+
+                abstract = _pm_re.sub(r"\s+", " ", (it.get("abstract") or "")).strip()
+                if abstract:
+                    abstract = _pm_re.sub(r"</?[^>]+>", " ", abstract)
+                    abstract = _pm_re.sub(r"\s+", " ", abstract).strip()
+
+                subj = it.get("subject") or []
+                subjects = [str(x) for x in subj if x][:5] if isinstance(subj, list) else []
+                if not _is_pm_candidate(title, abstract, subjects):
+                    continue
+
+                tags = ["crossref", str(it.get("type") or "work")]
+                if subjects:
+                    tags.extend(subjects[:3])
+
+                out.append(
+                    PMArticle(
+                        source="crossref",
+                        external_id=doi or hashlib.md5((title + pdf_url).encode()).hexdigest(),
+                        title=title,
+                        date_sub=date_sub or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        pdf_url=pdf_url,
+                        authors={"list": authors_list} if authors_list else None,
+                        tags=tags,
+                        abstract=abstract,
+                        category="process_mining",
+                    )
+                )
+
+        # дедуп и ограничение
+        uniq = {}
+        for a in out:
+            uniq[(a.source, a.external_id)] = a
+        ranked = list(uniq.values())
+        ranked.sort(key=lambda x: x.date_sub, reverse=True)
+        return ranked[:max_per_source]
+
+    async def parse_core_api(self, query: str, max_per_source: int) -> list[PMArticle]:
+        """CORE API v3 /search/works.
+
+        Особенности источника:
+        - требует Bearer CORE_API_KEY
+        - чувствителен к широким запросам (возможны 500/timeout), поэтому используем
+          узкие title-based запросы и мягкие ретраи с backoff
+        """
+        api_key = os.getenv("CORE_API_KEY", "").strip()
+        if not api_key:
+            return []
+
+        base_url = "https://api.core.ac.uk/v3/search/works"
+        this_year = datetime.now(timezone.utc).year
+        page_size = max(5, min(int(max_per_source), 10))
+
+        allowlist = (
+            "process mining", "event log", "event logs", "conformance checking",
+            "process discovery", "task mining", "object-centric", "ocel",
+            "process model", "business process", "workflow mining", "process intelligence",
+            "process analytics", "audit", "compliance checking", "deviation analysis",
+        )
+        blocklist = (
+            "project management", "product management", "pm2.5", "particulate matter",
+            "preventive maintenance", "predictive maintenance", "portfolio management",
+        )
+
+        def _norm(txt: str) -> str:
+            return _pm_re.sub(r"\s+", " ", (txt or "")).strip()
+
+        def _is_pm(title: str, abstract: str) -> bool:
+            txt = f"{title} {abstract}".lower()
+            if any(b in txt for b in blocklist):
+                return False
+            return any(k in txt for k in allowlist)
+
+        def _extract_year(item: dict) -> str:
+            yp = item.get("yearPublished")
+            if isinstance(yp, int):
+                y = yp
+            else:
+                pd = str(item.get("publishedDate") or "")
+                m = _pm_re.search(r"\b(19|20)\d{2}\b", pd)
+                y = int(m.group(0)) if m else this_year
+            y = min(max(y, 1900), this_year)
+            return f"{y}-01-01"
+
+        # CORE иногда отдаёт timeout на широких формулировках; начинаем с узкого запроса.
+        queries = [
+            '(title:"process mining") AND (title:"event log" OR title:"conformance checking" OR title:"task mining" OR title:"OCEL" OR title:"process discovery")',
+            '(title:"process mining") AND (title:"event log" OR title:"conformance checking" OR title:"task mining")',
+            'title:"process mining"',
+        ]
+        q_user = (query or "").strip()
+        if q_user and len(q_user) <= 64 and '"' not in q_user:
+            queries.insert(0, f'title:"{q_user}"')
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": "catchpm-parser-service/1.2",
+        }
+
+        uniq: dict[str, PMArticle] = {}
+
+        async with httpx.AsyncClient(timeout=self.timeout_http, follow_redirects=True) as client:
+            for q in queries:
+                offset = 0
+                # максимум 3 страницы на один вариант запроса
+                for _ in range(3):
+                    params = {"q": q, "limit": page_size, "offset": offset}
+                    data = None
+                    for attempt in range(3):
+                        try:
+                            resp = await client.get(base_url, headers=headers, params=params)
+                            if resp.status_code in (429, 500, 502, 503, 504):
+                                await asyncio.sleep(1.2 * (attempt + 1))
+                                continue
+                            resp.raise_for_status()
+                            data = resp.json() or {}
+                            break
+                        except Exception:
+                            if attempt >= 2:
+                                data = None
+                            else:
+                                await asyncio.sleep(1.2 * (attempt + 1))
+
+                    if not data:
+                        break
+
+                    batch = data.get("results") or []
+                    if not batch:
+                        break
+
+                    for item in batch:
+                        title = _norm(item.get("title") or "")
+                        if not title:
+                            continue
+                        abstract = _norm(item.get("abstract") or "")
+                        if not _is_pm(title, abstract):
+                            continue
+
+                        download_url = (item.get("downloadUrl") or "").strip()
+                        item_id = str(item.get("id") or "").strip()
+                        doi = (item.get("doi") or "").strip()
+                        ext = doi or item_id or hashlib.md5((title + download_url).encode()).hexdigest()
+
+                        authors_list = []
+                        for a in (item.get("authors") or []):
+                            if isinstance(a, dict):
+                                nm = (a.get("name") or "").strip()
+                                if nm:
+                                    authors_list.append(nm)
+                            elif isinstance(a, str) and a.strip():
+                                authors_list.append(a.strip())
+
+                        tags = ["core", "works"]
+                        if item.get("isOpenAccess") is True:
+                            tags.append("open_access")
+
+                        art = PMArticle(
+                            source="core_api",
+                            external_id=ext,
+                            title=title,
+                            date_sub=_extract_year(item),
+                            pdf_url=download_url,
+                            authors={"list": authors_list} if authors_list else None,
+                            tags=tags,
+                            abstract=abstract,
+                            category="process_mining",
+                        )
+                        uniq[f"{art.source}:{art.external_id}"] = art
+
+                        if len(uniq) >= max_per_source:
+                            break
+
+                    if len(uniq) >= max_per_source:
+                        break
+                    offset += page_size
+                if len(uniq) >= max_per_source:
+                    break
+
+        ranked = list(uniq.values())
+        ranked.sort(key=lambda x: x.date_sub, reverse=True)
+        return ranked[:max_per_source]
+
+    async def core_enrich_by_doi_or_title(self, doi: str = "", title: str = "", limit: int = 5) -> dict:
+        """Точечное обогащение из CORE по DOI и/или названию.
+
+        Возвращает компактные метаданные + лучший матч.
+        """
+        api_key = os.getenv("CORE_API_KEY", "").strip()
+        if not api_key:
+            return {"ok": False, "error": "core_api_key_missing", "results": [], "total": 0}
+
+        doi = (doi or "").strip()
+        title = _pm_re.sub(r"\s+", " ", (title or "")).strip()
+        if not doi and not title:
+            return {"ok": False, "error": "empty_query", "results": [], "total": 0}
+
+        base_url = "https://api.core.ac.uk/v3/search/works"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "User-Agent": "catchpm-parser-service/1.2",
+        }
+
+        def _safe(s: str) -> str:
+            return (s or "").replace('"', ' ').strip()
+
+        queries = []
+        if doi:
+            d = _safe(doi)
+            queries.extend([
+                f'doi:"{d}"',
+                f'"{d}"',
+            ])
+        if title:
+            t = _safe(title)
+            if t:
+                queries.extend([
+                    f'title:"{t}"',
+                    f'"{t}"',
+                ])
+                # мягкое укорочение для длинных title
+                toks = [x for x in t.split() if len(x) > 2][:8]
+                if toks:
+                    queries.append(" ".join(toks))
+
+        # remove duplicates preserving order
+        dedup_q = []
+        seen_q = set()
+        for q in queries:
+            if q and q not in seen_q:
+                seen_q.add(q)
+                dedup_q.append(q)
+        queries = dedup_q[:6]
+
+        def _compact(item: dict) -> dict:
+            au = []
+            for a in (item.get("authors") or []):
+                if isinstance(a, dict):
+                    nm = (a.get("name") or "").strip()
+                    if nm:
+                        au.append(nm)
+                elif isinstance(a, str) and a.strip():
+                    au.append(a.strip())
+            t = _pm_re.sub(r"\s+", " ", str(item.get("title") or "")).strip()
+            ab = _pm_re.sub(r"\s+", " ", str(item.get("abstract") or "")).strip()
+            return {
+                "id": item.get("id"),
+                "doi": item.get("doi"),
+                "title": t,
+                "yearPublished": item.get("yearPublished"),
+                "publishedDate": item.get("publishedDate"),
+                "downloadUrl": item.get("downloadUrl"),
+                "isOpenAccess": item.get("isOpenAccess"),
+                "citationCount": item.get("citationCount"),
+                "authors": au,
+                "abstract": ab[:1400],
+            }
+
+        def _score(it: dict) -> int:
+            s = 0
+            doi_it = (it.get("doi") or "").lower().strip()
+            title_it = (it.get("title") or "").lower().strip()
+            if doi and doi_it == doi.lower():
+                s += 100
+            if title:
+                t = title.lower()
+                if t and t == title_it:
+                    s += 60
+                if t and t in title_it:
+                    s += 30
+            if it.get("downloadUrl"):
+                s += 5
+            if it.get("isOpenAccess") is True:
+                s += 5
+            return s
+
+        uniq = {}
+        errors = []
+        req_limit = max(1, min(int(limit or 5), 10))
+
+        async with httpx.AsyncClient(timeout=self.timeout_http, follow_redirects=True) as client:
+            for q in queries:
+                params = {"q": q, "limit": req_limit, "offset": 0}
+                data = None
+                for attempt in range(3):
+                    try:
+                        resp = await client.get(base_url, headers=headers, params=params)
+                        if resp.status_code in (429, 500, 502, 503, 504):
+                            await asyncio.sleep(1.0 * (attempt + 1))
+                            continue
+                        resp.raise_for_status()
+                        data = resp.json() or {}
+                        break
+                    except Exception as e:
+                        if attempt >= 2:
+                            errors.append(f"q={q[:80]} err={str(e)[:120]}")
+                        else:
+                            await asyncio.sleep(1.0 * (attempt + 1))
+                if not data:
+                    continue
+
+                for item in (data.get("results") or []):
+                    c = _compact(item)
+                    key = (str(c.get("doi") or "").lower().strip() or str(c.get("id") or "") or hashlib.md5((c.get("title") or "").encode()).hexdigest())
+                    if key not in uniq:
+                        uniq[key] = c
+
+        ranked = list(uniq.values())
+        ranked.sort(key=_score, reverse=True)
+        ranked = ranked[:req_limit]
+
+        return {
+            "ok": True,
+            "query": {"doi": doi, "title": title},
+            "total": len(ranked),
+            "best_match": ranked[0] if ranked else None,
+            "results": ranked,
+            "errors": errors[:10],
+        }
 
     async def parse_fluxicon(self, max_per_source: int) -> list[PMArticle]:
         base_url = "https://www.fluxicon.com"
@@ -261,6 +711,113 @@ class PMParserService:
                 )
             )
         return out
+
+    async def parse_scholar_scrapingdog(self, query: str, max_per_source: int) -> list[PMArticle]:
+        """Google Scholar через ScrapingDog API (надёжнее браузерного скрейпа).
+
+        Берём только статьи с PDF. Год из displayed_link. Даты из будущего
+        отбрасываются на общем рубеже upsert; здесь дополнительно клампим год.
+        """
+        api_key = os.getenv("SCRAPINGDOG_API_KEY", "").strip()
+        if not api_key:
+            return []
+
+        base_url = "https://api.scrapingdog.com/google_scholar"
+        this_year = datetime.now(timezone.utc).year
+        results = max(10, min(int(max_per_source) * 2, 20))
+
+        allowlist = (
+            "process mining", "event log", "event logs", "conformance checking",
+            "process discovery", "task mining", "object-centric", "ocel",
+            "process model", "business process", "workflow mining", "process intelligence",
+            "process analytics", "audit", "compliance checking", "deviation analysis",
+        )
+        blocklist = (
+            "project management", "product management", "pm2.5", "particulate matter",
+            "preventive maintenance", "portfolio management",
+        )
+
+        def _is_pm(title: str, abstract: str) -> bool:
+            txt = f"{title} {abstract}".lower()
+            if any(b in txt for b in blocklist):
+                return False
+            return any(k in txt for k in allowlist)
+
+        def _year(displayed_link: str) -> str:
+            m = _pm_re.search(r"\b(19|20)\d{2}\b", displayed_link or "")
+            return m.group(0) if m else ""
+
+        params = {
+            "api_key": api_key,
+            "query": query,
+            "results": results,
+            "page": 0,
+            "language": "en",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_scholar, follow_redirects=True) as client:
+                resp = await client.get(base_url, params=params)
+                resp.raise_for_status()
+                data = resp.json() or {}
+        except Exception:
+            return []
+
+        out: list[PMArticle] = []
+        for item in (data.get("scholar_results") or []):
+            pdf_url = ""
+            for res in (item.get("resources") or []):
+                if (res.get("type") or "").upper() == "PDF" and res.get("link"):
+                    pdf_url = res.get("link")
+                    break
+            if not pdf_url:
+                continue
+
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+            snippet = (item.get("snippet") or "").strip()
+            if not _is_pm(title, snippet):
+                continue
+
+            title_link = (item.get("title_link") or "").strip()
+            scholar_id = (item.get("id") or "").strip()
+            authors = [a.get("name", "") for a in (item.get("authors") or []) if a.get("name")]
+
+            yr = _year(item.get("displayed_link") or "")
+            date_sub = ""
+            if yr:
+                try:
+                    y_int = min(int(yr), this_year)
+                    date_sub = f"{y_int}-01-01"
+                except Exception:
+                    date_sub = ""
+
+            cited_by = (
+                ((item.get("inline_links") or {}).get("cited_by") or {}).get("total") or ""
+            )
+            tags = ["scholar", "scrapingdog"]
+            if cited_by:
+                tags.append(f"cited_by:{cited_by}")
+
+            out.append(
+                PMArticle(
+                    source="google_scholar",
+                    external_id=scholar_id or hashlib.md5((title + pdf_url).encode()).hexdigest(),
+                    title=title,
+                    date_sub=date_sub or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    pdf_url=pdf_url,
+                    authors={"list": authors} if authors else None,
+                    tags=tags,
+                    abstract=snippet,
+                    category="process_mining",
+                )
+            )
+
+        uniq = {}
+        for a in out:
+            uniq[a.external_id] = a
+        return list(uniq.values())[:max_per_source]
 
     def build_scholar_url(self, query: str, start: int, ui_lang: str = "ru", fulltext: bool = False) -> str:
         params = {
@@ -327,6 +884,22 @@ class ParserRunPayload(BaseModel):
     query: str = PM_QUERY_DEFAULT
     max_per_source: int = 20
     ui_lang: str = "en"
+
+
+class CoreEnrichPayload(BaseModel):
+    doi: str = ""
+    title: str = ""
+    limit: int = 5
+
+
+@router.post("/api/core/enrich")
+async def core_enrich(payload: CoreEnrichPayload, x_api_key: Optional[str] = Header(default=None)):
+    if EXPECTED_KEY and x_api_key != EXPECTED_KEY:
+        return {"ok": False, "error": "unauthorized"}
+    doi = (payload.doi or "").strip()
+    title = (payload.title or "").strip()
+    limit = max(1, min(int(payload.limit), 10))
+    return await pm_svc.core_enrich_by_doi_or_title(doi=doi, title=title, limit=limit)
 
 
 @router.post("/api/parser/run")

@@ -5,7 +5,7 @@
 
 ## Пайплайн
 1. Крон (раз в неделю, пн 12:00 МСК) дергает `POST catchpm-browser:9333/api/parser/run`
-   -> JSON метаданных статей (arxiv API/HTML, fluxicon, google scholar).
+   -> JSON метаданных статей (arxiv API/HTML, crossref, CORE API, fluxicon, google scholar).
 2. Upsert в `process_mining.papers_metadata` (уникальность source+external_id).
 3. Для каждой new-статьи: LLM оценивает релевантность (4 критерия, порог 0.6)
    и сразу выдаёт категорию — одним JSON.
@@ -28,7 +28,8 @@
 Микросервисная. PMAnalyze — только http-клиент: всё "железо" парсинга
 (httpx / BeautifulSoup / playwright / pypdf) живёт в сервисе-парсере
 `catchpm-browser` (порт 9333). PMAnalyze дёргает его по докер-сети:
-`_collect()` -> `POST /api/parser/run`, `_fetch_pdf_text()` -> `POST /api/pdf/fulltext`.
+`_collect()` -> `POST /api/parser/run`, `_fetch_pdf_text()` -> `POST /api/pdf/fulltext`,
+точечное обогащение метаданных -> `POST /api/core/enrich`.
 Никакого playwright/pypdf и золота внутри PMAnalyze нет.
 
 ## Донор

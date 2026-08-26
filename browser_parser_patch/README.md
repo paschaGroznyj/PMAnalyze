@@ -1,7 +1,7 @@
 # browser_parser_patch
 
 Патч-модуль для **существующего** сервиса-парсера `catchpm-browser`
-(контейнер `catchpm-browser`, образ `catchpm-browser-parser:v1`, порт `9333`).
+(контейнер `catchpm-browser`, образ `catchpm-browser-parser:v3-coreapi`, порт `9333`).
 
 Это НЕ часть PMAnalyze. Всё "железо" парсинга (httpx / BeautifulSoup /
 playwright / pypdf) живёт внутри сервиса-парсера. PMAnalyze — только http-клиент,
@@ -9,12 +9,13 @@ playwright / pypdf) живёт внутри сервиса-парсера. PMAna
 
 ## Что даёт
 
-Добавляет к боевому `parser_service.py` (health + fetch/pages + gold/scan) два эндпоинта:
+Добавляет к боевому `parser_service.py` (health + fetch/pages + gold/scan) три эндпоинта:
 
 | Метод | Путь                 | Назначение                                              |
 |-------|----------------------|---------------------------------------------------------|
 | POST  | `/api/parser/run`    | Сбор статей PM: arxiv API/HTML, fluxicon, google scholar |
 | POST  | `/api/pdf/fulltext`  | Первые N (=4) страниц PDF через pypdf                    |
+| POST  | `/api/core/enrich`   | Точечное обогащение CORE по DOI/Title                    |
 
 Gold-логика не затрагивается.
 
@@ -58,7 +59,7 @@ Gold-логика не затрагивается.
 {
   "ok": true,
   "query": "...",
-  "sources": { "arxiv_api": 20, "arxiv_html": 18, "fluxicon": 5, "google_scholar": 10 },
+  "sources": { "arxiv_api": 20, "arxiv_html": 18, "crossref": 12, "core_api": 10, "fluxicon": 5, "google_scholar": 10 },
   "errors": {},
   "total": 53,
   "articles": [
@@ -85,5 +86,23 @@ Gold-логика не затрагивается.
       "pages_read": 4, "chars": 8123, "text": "..." }
   ],
   "generated_at": "2026-08-24T09:00:00+00:00"
+}
+```
+
+
+### POST /api/core/enrich
+Запрос:
+```json
+{ "doi": "10.1002/0471741442.ch10", "title": "Process Mining", "limit": 5 }
+```
+Ответ:
+```json
+{
+  "ok": true,
+  "query": {"doi": "...", "title": "..."},
+  "total": 3,
+  "best_match": {"doi": "...", "title": "...", "downloadUrl": "..."},
+  "results": [ ... ],
+  "errors": []
 }
 ```

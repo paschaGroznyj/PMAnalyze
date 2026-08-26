@@ -30,6 +30,9 @@ from pydantic import BaseModel
 router = APIRouter()
 EXPECTED_KEY = os.getenv("PARSER_SERVICE_API_KEY", "").strip()
 
+PARSER_SOURCES_ORDER = ["arxiv_api", "arxiv_html", "crossref", "core_api", "fluxicon", "google_scholar"]
+PARSER_SOURCES_SET = set(PARSER_SOURCES_ORDER)
+
 import re as _pm_re
 from dataclasses import asdict as _pm_asdict, dataclass as _pm_dataclass
 from urllib.parse import urlencode as _pm_urlencode
@@ -88,23 +91,31 @@ class PMParserService:
             return res
         return await self.parse_google_scholar_browser(query, max_per_source, ui_lang)
 
-    async def collect_all_sources(self, query: str, max_per_source: int, ui_lang: str) -> dict:
-        tasks = [
-            self.parse_arxiv_api(query, max_per_source),
-            self.parse_arxiv_html(query, max_per_source),
-            self.parse_crossref(query, max_per_source),
-            self.parse_core_api(query, max_per_source),
-            self.parse_fluxicon(max_per_source),
-            self._parse_scholar_combined(query, max_per_source, ui_lang),
-        ]
+    async def collect_all_sources(self, query: str, max_per_source: int, ui_lang: str, include_sources: list[str] | None = None) -> dict:
+        wanted = []
+        for s in (include_sources or PARSER_SOURCES_ORDER):
+            k = str(s or "").strip().lower()
+            if k in PARSER_SOURCES_SET and k not in wanted:
+                wanted.append(k)
+        if not wanted:
+            wanted = list(PARSER_SOURCES_ORDER)
+
+        task_map = {
+            "arxiv_api": self.parse_arxiv_api(query, max_per_source),
+            "arxiv_html": self.parse_arxiv_html(query, max_per_source),
+            "crossref": self.parse_crossref(query, max_per_source),
+            "core_api": self.parse_core_api(query, max_per_source),
+            "fluxicon": self.parse_fluxicon(max_per_source),
+            "google_scholar": self._parse_scholar_combined(query, max_per_source, ui_lang),
+        }
+        tasks = [task_map[s] for s in wanted]
         chunks = await asyncio.gather(*tasks, return_exceptions=True)
 
         out: list[PMArticle] = []
-        source_stats: dict[str, int] = {}
+        source_stats: dict[str, int] = {s: 0 for s in PARSER_SOURCES_ORDER}
         errors: dict[str, str] = {}
-        sources = ["arxiv_api", "arxiv_html", "crossref", "core_api", "fluxicon", "google_scholar"]
 
-        for src, chunk in zip(sources, chunks):
+        for src, chunk in zip(wanted, chunks):
             if isinstance(chunk, Exception):
                 errors[src] = str(chunk)[:300]
                 source_stats[src] = 0
@@ -884,6 +895,7 @@ class ParserRunPayload(BaseModel):
     query: str = PM_QUERY_DEFAULT
     max_per_source: int = 20
     ui_lang: str = "en"
+    include_sources: list[str] = []
 
 
 class CoreEnrichPayload(BaseModel):
@@ -909,9 +921,14 @@ async def run_parser(payload: ParserRunPayload, x_api_key: Optional[str] = Heade
     q = (payload.query or PM_QUERY_DEFAULT).strip()
     max_per_source = max(1, min(int(payload.max_per_source), 30))
     ui_lang = (payload.ui_lang or "en").strip()[:5]
+    include_sources = []
+    for s in (payload.include_sources or []):
+        k = str(s or "").strip().lower()
+        if k in PARSER_SOURCES_SET and k not in include_sources:
+            include_sources.append(k)
 
     started = int(datetime.now(timezone.utc).timestamp())
-    result = await pm_svc.collect_all_sources(q, max_per_source, ui_lang)
+    result = await pm_svc.collect_all_sources(q, max_per_source, ui_lang, include_sources=include_sources)
     result["started_at"] = started
     result["finished_at"] = int(datetime.now(timezone.utc).timestamp())
     return result

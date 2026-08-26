@@ -21,23 +21,33 @@ from app.search import embed_text, EMBED_MODEL, TS_CONFIG
 
 def _to_date(value):
     """Парсит строку/дату в datetime.date для asyncpg ($4 date_sub).
-    Возвращает None, если распарсить нельзя (в БД пойдёт NULL)."""
+    Возвращает None, если распарсить нельзя (в БД пойдёт NULL).
+    Даты из будущего отбрасываются (возвращается None) — защита от
+    published-print будущих выпусков журналов (Crossref и пр.)."""
+    def _guard_future(d):
+        if d is None:
+            return None
+        # допускаем небольшой люфт на разницу часовых поясов
+        if d > (datetime.now(timezone.utc).date() + timedelta(days=1)):
+            return None
+        return d
+
     if value is None:
         return None
     if isinstance(value, date) and not isinstance(value, datetime):
-        return value
+        return _guard_future(value)
     if isinstance(value, datetime):
-        return value.date()
+        return _guard_future(value.date())
     s = str(value).strip()
     if not s:
         return None
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%d %b %Y", "%d %B %Y"):
         try:
-            return datetime.strptime(s, fmt).date()
+            return _guard_future(datetime.strptime(s, fmt).date())
         except ValueError:
             continue
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        return _guard_future(datetime.fromisoformat(s.replace("Z", "+00:00")).date())
     except ValueError:
         return None
 
@@ -227,7 +237,7 @@ class PMAnalyzePipeline:
             await con.execute("SELECT pg_advisory_unlock($1)", self.settings.lock_key)
 
     # ---------------- main run ----------------
-    async def run_once(self) -> dict:
+    async def run_once(self, parser_sources: list[str] | None = None) -> dict:
         if not await self._try_lock():
             print("[pmanalyze] another run holds the lock, skip")
             return {"ok": False, "skipped": "locked"}
@@ -240,7 +250,7 @@ class PMAnalyzePipeline:
                 )
 
             # 1) сбор метаданных
-            fetched = await self._collect()
+            fetched = await self._collect(parser_sources=parser_sources)
             stats["fetched"] = len(fetched)
 
             # 2) upsert в papers_metadata
@@ -275,22 +285,24 @@ class PMAnalyzePipeline:
         finally:
             await self._unlock()
 
-    async def run_once_guarded(self) -> dict:
+    async def run_once_guarded(self, parser_sources: list[str] | None = None) -> dict:
         # Защита от повторного старта парсинга в рамках одного инстанса
         if not await self._try_claim_parser_run():
             print("[pmanalyze] run_once already running in this instance, skip")
             return {"ok": False, "skipped": "already_running"}
         try:
-            return await self.run_once()
+            return await self.run_once(parser_sources=parser_sources)
         finally:
             await self._release_parser_run()
 
     # ---------------- collect from parser service ----------------
-    async def _collect(self) -> list[dict]:
+    async def _collect(self, parser_sources: list[str] | None = None) -> list[dict]:
         headers = {"Content-Type": "application/json"}
         if self.settings.parser_api_key:
             headers["X-Api-Key"] = self.settings.parser_api_key
         payload = {"max_per_source": int(self.settings.max_per_source), "ui_lang": "en"}
+        if parser_sources:
+            payload["include_sources"] = [str(s).strip().lower() for s in parser_sources if str(s).strip()]
         try:
             async with httpx.AsyncClient(timeout=self.settings.parser_timeout) as client:
                 r = await client.post(self.settings.parser_run_url, headers=headers, json=payload)

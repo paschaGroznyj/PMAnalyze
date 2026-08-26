@@ -272,9 +272,10 @@ async def stats():
         base = await con.fetchrow("""
             SELECT count(*) total,
                    count(*) FILTER (WHERE p.is_relevant) relevant,
-                   count(*) FILTER (WHERE EXISTS (
-                       SELECT 1 FROM process_mining.reviews r WHERE r.article_id = p.id
-                   )) reviewed,
+                   count(*) FILTER (
+                       WHERE p.is_relevant = TRUE
+                         AND EXISTS (SELECT 1 FROM process_mining.reviews r WHERE r.article_id = p.id)
+                   ) reviewed,
                    count(*) FILTER (WHERE p.relevance_score IS NOT NULL) assessed,
                    count(*) FILTER (WHERE p.is_relevant IS NOT NULL AND p.relevance_score IS NOT NULL AND NOT p.is_relevant) irrelevant,
                    count(*) FILTER (

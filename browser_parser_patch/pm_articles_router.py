@@ -357,40 +357,151 @@ def _pm_normalize_pdf_url(url: str) -> str:
     return u  # прочие источники: пробуем как есть
 
 
+_PM_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+
+def _pm_extract_pdf_text(data: bytes, max_pages: int, max_chars: int) -> dict:
+    """Достаёт текст из PDF-байтов через pypdf. Возвращает {pages_read, chars, text}."""
+    import io
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(data))
+    parts, n = [], 0
+    for page in reader.pages[:max_pages]:
+        t = page.extract_text() or ""
+        if t:
+            parts.append(t)
+        n += 1
+    text = "\n".join(parts)[:max_chars]
+    return {"pages_read": n, "chars": len(text), "text": text}
+
+
+async def _pm_fetch_pdf_via_playwright(url: str, max_pages: int, max_chars: int) -> dict:
+    """
+    Fallback для источников, отдающих 403 / HTML-лендинг вместо PDF по httpx
+    (openalex/crossref/zenodo и пр.). Открывает страницу реальным браузером,
+    перехватывает первый PDF-ответ через page.on('response') и парсит его.
+    Прямой PDF-URL тоже пробуем открыть в браузере — часть сайтов отдаёт байты
+    только в контексте сессии с настоящим UA.
+    """
+    from playwright.async_api import async_playwright
+    grabbed = {"data": None}
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        ctx = await browser.new_context(
+            user_agent=_PM_BROWSER_UA,
+            locale="en-US",
+            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+        )
+        page = await ctx.new_page()
+
+        async def _on_resp(resp):
+            try:
+                if grabbed["data"] is not None:
+                    return
+                ct = (resp.headers.get("content-type") or "").lower()
+                if "pdf" in ct:
+                    body = await resp.body()
+                    if body[:5] == b"%PDF-":
+                        grabbed["data"] = body
+            except Exception:
+                pass
+
+        page.on("response", _on_resp)
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(3500)
+
+            # Если PDF не перехвачен пассивно — ищем прямую ссылку на файл
+            # на лендинге (zenodo/repo-страницы кладут .pdf в <a href>).
+            if grabbed["data"] is None:
+                try:
+                    hrefs = await page.eval_on_selector_all(
+                        "a",
+                        "els => els.map(e => e.href).filter(h => h && "
+                        "(h.toLowerCase().includes('.pdf') || "
+                        "h.toLowerCase().includes('/files/')))",
+                    )
+                except Exception:
+                    hrefs = []
+                seen_h = set()
+                for h in hrefs:
+                    if not h or h in seen_h:
+                        continue
+                    seen_h.add(h)
+                    try:
+                        resp = await ctx.request.get(h, timeout=45000)
+                        ct = (resp.headers.get("content-type") or "").lower()
+                        body = await resp.body()
+                        if ("pdf" in ct or body[:5] == b"%PDF-") and body[:5] == b"%PDF-":
+                            grabbed["data"] = body
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        finally:
+            await browser.close()
+
+    if grabbed["data"] is None:
+        return {"ok": False, "error": "playwright_no_pdf_captured"}
+    try:
+        res = _pm_extract_pdf_text(grabbed["data"], max_pages, max_chars)
+        return {"ok": True, "via": "playwright", **res}
+    except Exception as e:
+        return {"ok": False, "error": f"playwright_pdf_parse_error: {str(e)[:200]}"}
+
+
 async def _pm_fetch_pdf_excerpt(pdf_url: str, max_pages: int, max_chars: int) -> dict:
     norm = _pm_normalize_pdf_url(pdf_url)
     row = {"url": pdf_url, "norm_url": norm, "ok": False, "error": None,
-           "pages_read": 0, "chars": 0, "text": ""}
+           "pages_read": 0, "chars": 0, "text": "", "via": None}
     if not norm:
         row["error"] = "empty_or_unsupported_url"
         return row
     try:
-        from pypdf import PdfReader
+        from pypdf import PdfReader  # noqa: F401 (проверка наличия)
     except Exception as e:
         row["error"] = f"pypdf_missing: {e}"
         return row
+
+    # 1) быстрый путь: httpx
+    httpx_error = None
     try:
         import io
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            r = await client.get(norm, headers={"User-Agent": "Mozilla/5.0"})
-            r.raise_for_status()
+            r = await client.get(norm, headers={
+                "User-Agent": _PM_BROWSER_UA,
+                "Accept": "application/pdf,text/html,*/*",
+            })
+        if r.status_code == 200:
             data = r.content
-        ctype = (r.headers.get("content-type") or "").lower()
-        if "pdf" not in ctype and bytes(data[:5]) != b"%PDF-":
-            row["error"] = f"not_pdf(content-type={ctype[:60]})"
-            return row
-        reader = PdfReader(io.BytesIO(data))
-        parts = []
-        n = 0
-        for page in reader.pages[:max_pages]:
-            t = page.extract_text() or ""
-            if t:
-                parts.append(t)
-            n += 1
-        text = "\n".join(parts)[:max_chars]
-        row.update({"ok": True, "pages_read": n, "chars": len(text), "text": text})
+            ctype = (r.headers.get("content-type") or "").lower()
+            if "pdf" in ctype or bytes(data[:5]) == b"%PDF-":
+                res = _pm_extract_pdf_text(data, max_pages, max_chars)
+                row.update({"ok": True, "via": "httpx", **res})
+                return row
+            httpx_error = f"not_pdf(content-type={ctype[:60]})"
+        else:
+            httpx_error = f"http_{r.status_code}"
     except Exception as e:
-        row["error"] = str(e)[:300]
+        httpx_error = str(e)[:200]
+
+    # 2) fallback: playwright-рендер (обходит часть 403 / JS-лендингов)
+    try:
+        pw = await _pm_fetch_pdf_via_playwright(norm, max_pages, max_chars)
+        if pw.get("ok"):
+            row.update({"ok": True, "via": "playwright",
+                        "pages_read": pw["pages_read"], "chars": pw["chars"],
+                        "text": pw["text"]})
+            return row
+        row["error"] = f"httpx:{httpx_error}; playwright:{pw.get('error')}"
+    except Exception as e:
+        row["error"] = f"httpx:{httpx_error}; playwright_exc:{str(e)[:200]}"
     return row
 
 

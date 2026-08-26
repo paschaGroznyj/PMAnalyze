@@ -41,7 +41,7 @@ def _to_date(value):
     except ValueError:
         return None
 
-from app.prompts import build_relevance_prompt, build_review_prompt, CATEGORIES
+from app.prompts import build_relevance_prompt, build_review_prompt, build_annotation_translation_prompt, CATEGORIES
 
 
 @dataclass
@@ -637,6 +637,21 @@ class PMAnalyzePipeline:
         request_markers = ["пришлите", "предоставьте", "вставьте", "нужен текст"]
         return any(rm in t for rm in refusal_markers) and any(qm in t for qm in request_markers)
 
+    def _looks_like_unavailable_review_template(self, text: str) -> bool:
+        """Ловит шаблон-заглушку про недоступный текст/403, который нельзя сохранять как ревью."""
+        if not text:
+            return False
+        t = text.lower()
+        markers = [
+            "текст статьи недоступен",
+            "403 forbidden",
+            "ошибка 403",
+            "извлечение информации невозможно",
+            "название оригинальной статьи на английском*: отсутствует",
+        ]
+        hits = sum(1 for m in markers if m in t)
+        return hits >= 2
+
     async def generate_review(self, art: dict) -> tuple[str, str | None]:
         # Для Yandex: сначала бинарный PDF -> затем page fetch fallback.
         # Для прочих источников: page fetch -> pdf fallback.
@@ -711,8 +726,24 @@ class PMAnalyzePipeline:
                     page_text = await self._download_pdf_text(pdf_url)
 
         if not page_text:
-            print(f"[pmanalyze] empty content for article_id={art.get('id')} source={art.get('source')} ext={art.get('external_id')}")
-            return "", "content_unavailable_or_invalid_source_url"
+            print(f"[pmanalyze] empty content for article_id={art.get('id')} source={art.get('source')} ext={art.get('external_id')} -> fallback_to_abstract")
+            # Fallback: если полный текст недоступен, генерим НЕ шаблонное ревью,
+            # а перевод аннотации (по запросу PM).
+            abstract_text = (art.get("abstract") or "").strip()
+            if not abstract_text:
+                return "", "content_unavailable_or_invalid_source_url"
+            filename = f"{art.get('source','src')}_{art.get('external_id','id')}"
+            authors_hint = self._normalize_authors(art.get("authors"))
+            ann_prompt = build_annotation_translation_prompt(
+                title=(art.get("title") or "").strip(),
+                source_url=(source_url or pdf_url or url_article or "").strip(),
+                abstract_text=abstract_text,
+                authors_hint=authors_hint,
+            )
+            ann_review = await self._llm(self.settings.review_model, ann_prompt, max_tokens=1200)
+            if not (ann_review or "").strip():
+                return "", "annotation_translation_failed"
+            return ann_review, None
 
         # Если пробились через альтернативный URL — исходный невалидный URL помечаем как -1
         if source_url and original_source_url and source_url != original_source_url:
@@ -737,6 +768,22 @@ class PMAnalyzePipeline:
             if self._looks_like_refusal(review):
                 print(f"[pmanalyze] refusal-like review persisted for article_id={art.get('id')} source={art.get('source')}")
                 return "", "llm_refusal_or_bad_input"
+
+        # Защита от сохранения шаблона-заглушки про 403/недоступный текст.
+        if self._looks_like_unavailable_review_template(review):
+            print(f"[pmanalyze] unavailable-template detected for article_id={art.get('id')} -> fallback_to_abstract_translation")
+            abstract_text = (art.get("abstract") or "").strip()
+            if not abstract_text:
+                return "", "content_unavailable_or_invalid_source_url"
+            ann_prompt = build_annotation_translation_prompt(
+                title=(art.get("title") or "").strip(),
+                source_url=(source_url or pdf_url or url_article or "").strip(),
+                abstract_text=abstract_text,
+                authors_hint=authors_hint,
+            )
+            review = await self._llm(self.settings.review_model, ann_prompt, max_tokens=1200)
+            if not (review or "").strip() or self._looks_like_unavailable_review_template(review):
+                return "", "annotation_translation_failed"
 
         if not (review or "").strip():
             return "", "review_generation_failed"
@@ -862,6 +909,11 @@ class PMAnalyzePipeline:
                     await self._set_status(aid, "review_error", review_err or "review_generation_failed")
                     await self._reviews_progress_tick(done_inc=1, err_inc=1)
                     continue
+                if self._looks_like_refusal(review_md) or self._looks_like_unavailable_review_template(review_md):
+                    errors += 1
+                    await self._set_status(aid, "review_error", "review_contains_unavailable_or_refusal_template")
+                    await self._reviews_progress_tick(done_inc=1, err_inc=1)
+                    continue
                 await self._save_review(aid, review_md)
                 reviewed += 1
                 await self._set_status(aid, "reviewed")
@@ -902,6 +954,11 @@ class PMAnalyzePipeline:
                 if not review_md:
                     errors += 1
                     await self._set_status(aid, "review_error", review_err or "review_generation_failed")
+                    await self._reviews_progress_tick(done_inc=1, err_inc=1)
+                    continue
+                if self._looks_like_refusal(review_md) or self._looks_like_unavailable_review_template(review_md):
+                    errors += 1
+                    await self._set_status(aid, "review_error", "review_contains_unavailable_or_refusal_template")
                     await self._reviews_progress_tick(done_inc=1, err_inc=1)
                     continue
                 await self._save_review(aid, review_md)
@@ -953,6 +1010,12 @@ class PMAnalyzePipeline:
             )
 
     async def _save_review(self, aid: int, review_md: str):
+        text = (review_md or "").strip()
+        if not text:
+            raise ValueError("empty_review_md")
+        if self._looks_like_refusal(text) or self._looks_like_unavailable_review_template(text):
+            raise ValueError("unsafe_review_template_blocked")
+
         async with self.pool.acquire() as con:
             review_id = await con.fetchval(
                 """INSERT INTO process_mining.reviews (article_id, review_md, model_name)
@@ -960,7 +1023,7 @@ class PMAnalyzePipeline:
                    ON CONFLICT (article_id) DO UPDATE
                    SET review_md=EXCLUDED.review_md, model_name=EXCLUDED.model_name, created_at=now()
                    RETURNING id""",
-                aid, review_md, self.settings.review_model,
+                aid, text, self.settings.review_model,
             )
             await con.execute(
                 "UPDATE process_mining.papers_metadata SET review_flag=TRUE, updated_at=now() WHERE id=$1",
@@ -968,7 +1031,7 @@ class PMAnalyzePipeline:
             )
 
         # После успешного ревью сразу векторизуем и сохраняем в review_embeddings.
-        await self._upsert_review_embedding(aid, int(review_id), review_md)
+        await self._upsert_review_embedding(aid, int(review_id), text)
 
     async def _upsert_review_embedding(self, aid: int, review_id: int, review_md: str):
         text = (review_md or "").strip()

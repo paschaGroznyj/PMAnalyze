@@ -65,6 +65,7 @@
   .grid{display:grid; grid-template-columns:2fr 1fr; gap:14px; margin-top:14px}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px}
   .panel{border:2px solid var(--ink); background:var(--paper); padding:18px 20px}
+  .sources-panel{margin-top:18px}
   .panel h3{font-size:13px; font-family:'Space Mono',monospace; letter-spacing:.2em;
     text-transform:uppercase; border-bottom:2px solid var(--ink); padding-bottom:10px; margin-bottom:14px}
   .chartbox{position:relative; height:280px}
@@ -242,7 +243,7 @@
   .search-results{margin-top:16px; display:flex; flex-direction:column; gap:10px}
   .sr-item{border:2px solid var(--ink); background:#fff; padding:12px 14px; cursor:pointer}
   .sr-item:hover{box-shadow:3px 3px 0 var(--ink)}
-  .sr-title{font-weight:700; font-size:14px; line-height:1.25}
+  .sr-title{font-weight:700; font-size:14px; line-height:1.25; overflow-wrap:anywhere; word-break:break-word}
   .sr-meta{font-family:'Space Mono',monospace; font-size:10px; color:#9a8f82; margin-top:4px; letter-spacing:.04em}
   .sr-snip{font-size:12px; color:#4a443c; margin-top:6px; line-height:1.5}
   .search-empty{font-family:'Space Mono',monospace; font-size:12px; color:#9a8f82; padding:8px 0}
@@ -256,7 +257,7 @@
     <div>
       <div class="eyebrow mono">Process Mining · Competence Center</div>
       <h1>PMAnalyze<br>Practice Metrics</h1>
-      <div class="sub mono">Weekly pipeline · arxiv / fluxicon / scholar → relevance → review</div>
+      <div class="sub mono">Weekly pipeline · arxiv / crossref / core / fluxicon / scholar → relevance → review</div>
     </div>
     <div class="actions">
       <button class="btn" id="btn-parser">⚙ запустить парсер</button>
@@ -296,6 +297,12 @@
       <h3>Релевантность</h3>
       <div class="chartbox sm"><canvas id="chart-relevance"></canvas></div>
     </div>
+  </div>
+
+  <div class="panel sources-panel">
+    <h3>Источники парсинга</h3>
+    <div class="chartbox sm"><canvas id="chart-sources"></canvas></div>
+    <div class="mono" style="font-size:10px;color:#6b6055;margin-top:10px">клик по легенде — включить/исключить источник из следующего запуска</div>
   </div>
 
   <!-- ROW 2: categories + studio load -->
@@ -403,6 +410,35 @@ Chart.defaults.font.family = "'Space Mono', monospace";
 Chart.defaults.color = INK;
 Chart.defaults.font.size = 11;
 
+const SOURCE_LABELS = {
+  arxiv_api: "arxiv_api",
+  arxiv_html: "arxiv_html",
+  crossref: "crossref",
+  core_api: "core_api",
+  fluxicon: "fluxicon",
+  google_scholar: "google_scholar",
+};
+const SOURCE_ORDER = ["arxiv_api","arxiv_html","crossref","core_api","fluxicon","google_scholar"];
+const SOURCE_COLORS = ["#FFD9C7", "#CDE8D5", "#FBE7A1", "#E3D5F5", "#CFE6F7", "#F8D2DE"];
+const LS_ENABLED_SOURCES_KEY = "pm_enabled_sources_v1";
+function loadEnabledSources(){
+  try{
+    const raw = localStorage.getItem(LS_ENABLED_SOURCES_KEY);
+    if(!raw) return new Set(SOURCE_ORDER); // по умолчанию все включены
+    const arr = JSON.parse(raw);
+    if(!Array.isArray(arr)) return new Set(SOURCE_ORDER);
+    const picked = SOURCE_ORDER.filter(s=>arr.includes(s));
+    return new Set(picked.length ? picked : SOURCE_ORDER);
+  }catch(_){
+    return new Set(SOURCE_ORDER);
+  }
+}
+function saveEnabledSources(){
+  try{ localStorage.setItem(LS_ENABLED_SOURCES_KEY, JSON.stringify(Array.from(enabledSources))); }catch(_){}
+}
+let enabledSources = loadEnabledSources();
+let lastStatsFingerprint = "";
+
 function toast(msg, ms=3200){
   const t=$("#toast"); t.textContent=msg; t.style.display="block";
   clearTimeout(t._h); t._h=setTimeout(()=>t.style.display="none", ms);
@@ -433,6 +469,76 @@ function drawRelevance(rel, irr){
         borderColor:INK, borderWidth:2}]},
     options:{responsive:true, maintainAspectRatio:false, cutout:"58%",
       plugins:{legend:{position:"bottom",labels:{boxWidth:14,padding:14}}}}
+  });
+}
+
+function drawSources(bySource){
+  const labels = SOURCE_ORDER.filter(s => Object.prototype.hasOwnProperty.call(bySource||{}, s));
+  const finalLabels = labels.length ? labels : SOURCE_ORDER;
+  const values = finalLabels.map(s => Number((bySource||{})[s] || 0));
+
+  charts.src && charts.src.destroy();
+  charts.src = new Chart($("#chart-sources"), {
+    type: "doughnut",
+    data: {
+      labels: finalLabels.map(s => SOURCE_LABELS[s] || s),
+      datasets: [{
+        data: values,
+        backgroundColor: finalLabels.map((_,i)=>SOURCE_COLORS[i%SOURCE_COLORS.length]),
+        borderColor: INK,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive:true,
+      maintainAspectRatio:false,
+      cutout:"58%",
+      plugins:{
+        legend:{
+          position:"bottom",
+          labels:{
+            boxWidth:14,
+            padding:12,
+            generateLabels(chart){
+              const ds = chart.data.datasets[0] || {data:[]};
+              const arr = chart.data.labels || [];
+              return arr.map((text, i)=>{
+                const key = finalLabels[i];
+                const active = enabledSources.has(key);
+                return {
+                  text: active ? String(text) : "✕ " + String(text),
+                  fillStyle: ds.backgroundColor[i],
+                  strokeStyle: INK,
+                  lineWidth: 2,
+                  hidden: !active,
+                  index: i,
+                };
+              });
+            }
+          },
+          onClick(_e, item){
+            const idx = Number(item.index);
+            const key = finalLabels[idx];
+            if(!key) return;
+            if(enabledSources.has(key)) enabledSources.delete(key);
+            else enabledSources.add(key);
+            saveEnabledSources();
+            charts.src.update();
+          }
+        },
+        tooltip:{
+          callbacks:{
+            label(ctx){
+              const idx = ctx.dataIndex;
+              const key = finalLabels[idx];
+              const val = Number(values[idx]||0);
+              const active = enabledSources.has(key);
+              return `${ctx.label}: ${val}${active?"":" (исключен из запуска)"}`;
+            }
+          }
+        }
+      }
+    }
   });
 }
 const CATPAL=["#FFD9C7","#CDE8D5","#FBE7A1","#E3D5F5","#CFE6F7","#F8D2DE","#CDE8D5","#FFD9C7"];
@@ -467,20 +573,44 @@ function drawStages(stages){
   });
 }
 
+function setTextIfChanged(sel, value){
+  const el = $(sel);
+  const v = String(value);
+  if(el && el.textContent !== v) el.textContent = v;
+}
+
+function makeStatsFingerprint(d){
+  const dyn = d.dynamics || {labels:[],collected:[],processed:[]};
+  const bySource = {};
+  SOURCE_ORDER.forEach(s=>{ bySource[s] = Number((d.by_source||{})[s] || 0); });
+  const byCat = Object.entries(d.by_category||{}).sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
+  return JSON.stringify({
+    total:d.total, relevant:d.relevant, reviewed:d.reviewed, invalid:d.invalid_sources ?? 0,
+    week:d.week_new, avg:d.avg_relevance, assessed:d.assessed, irrelevant:d.irrelevant,
+    dyn, bySource, byCat
+  });
+}
+
 async function loadStats(){
   try{
     const r = await fetch("/api/stats"); const d = await r.json();
     if(!d.ok) throw new Error("stats not ok");
-    $("#k-total").textContent    = d.total;
-    $("#k-relevant").textContent = d.relevant;
-    $("#k-reviewed").textContent = d.reviewed;
-    $("#k-invalid").textContent  = d.invalid_sources ?? 0;
-    $("#k-week").textContent     = "+"+d.week_new;
-    $("#k-avg").textContent      = d.avg_relevance;
+
+    const fp = makeStatsFingerprint(d);
+    if(fp === lastStatsFingerprint) return; // ничего не поменялось — не перерисовываем
+    lastStatsFingerprint = fp;
+
+    setTextIfChanged("#k-total", d.total);
+    setTextIfChanged("#k-relevant", d.relevant);
+    setTextIfChanged("#k-reviewed", d.reviewed);
+    setTextIfChanged("#k-invalid", d.invalid_sources ?? 0);
+    setTextIfChanged("#k-week", "+"+d.week_new);
+    setTextIfChanged("#k-avg", d.avg_relevance);
 
     const dyn = d.dynamics || {labels:[],collected:[],processed:[]};
     drawDynamics(dyn.labels, dyn.processed, dyn.collected);
     drawRelevance(d.relevant, d.irrelevant);
+    drawSources(d.by_source||{});
     drawCategories(d.by_category||{});
     drawStages([
       {label:"собрано", value:d.total},
@@ -488,8 +618,7 @@ async function loadStats(){
       {label:"pdf прочитано", value:d.reviewed},
       {label:"ревью готово", value:d.reviewed},
     ]);
-    $("#mq-text").textContent =
-      `PMAnalyze · всего ${d.total} · релевантных ${d.relevant} · ревью ${d.reviewed} · невалидные источники ${d.invalid_sources ?? 0} · за неделю +${d.week_new} · avg relevance ${d.avg_relevance} ·`;
+    setTextIfChanged("#mq-text", `PMAnalyze · всего ${d.total} · релевантных ${d.relevant} · ревью ${d.reviewed} · невалидные источники ${d.invalid_sources ?? 0} · за неделю +${d.week_new} · avg relevance ${d.avg_relevance} ·`);
   }catch(e){ toast("Ошибка загрузки статистики"); console.error(e); }
 }
 
@@ -572,7 +701,14 @@ $("#btn-parser").onclick = async e=>{
   parserInFlight = true;
   e.target.disabled=true; toast("Запускаю парсер…");
   try{
-    const d = await post("/api/run/parser");
+    const include_sources = SOURCE_ORDER.filter(s=>enabledSources.has(s));
+    if(!include_sources.length){
+      toast("Выберите хотя бы один источник для запуска", 4200);
+      parserInFlight = false;
+      e.target.disabled=false;
+      return;
+    }
+    const d = await post("/api/run/parser", {include_sources});
     if(d.ok){
       toast("Парсер запущен (фоново)");
     }else if(d.__http===409 || d.status==="busy"){

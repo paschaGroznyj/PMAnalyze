@@ -1,0 +1,97 @@
+<!-- ONBOARDING TOUR (partial) -->
+<!-- Подключается склейкой в роуте GET / перед закрывающим тегом body. -->
+<!-- Стили переиспользуются из dashboard.html: .modal-bg / .modal / .btn / .foot -->
+<div class="modal-bg" id="onb-modal">
+  <div class="modal" style="max-width:520px">
+    <div class="mono" style="color:var(--orange)">Знакомство с PMAnalyze</div>
+    <h2 id="onb-title">Добро пожаловать</h2>
+    <div class="mono" id="onb-step-badge" style="margin-top:8px">Шаг 1 из 5</div>
+    <div id="onb-body" style="margin-top:14px; font-size:14px; line-height:1.55; min-height:96px"></div>
+    <div style="display:flex; gap:6px; margin-top:18px" id="onb-dots"></div>
+    <div class="foot">
+      <button class="btn" id="onb-skip">пропустить</button>
+      <button class="btn" id="onb-prev">назад</button>
+      <button class="btn accent" id="onb-next" style="flex:1">далее</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============ ONBOARDING TOUR ============ */
+(function(){
+  const $ = s => document.querySelector(s);
+
+  const ONB_STEPS = [
+    { t:"Добро пожаловать в PMAnalyze",
+      b:"Это дашборд центра компетенций Process Mining. Здесь собираются свежие статьи, готовятся ревью и рассылаются дайджесты. Пробежимся по основным возможностям за минуту." },
+    { t:"KPI и обзор базы",
+      b:"Верхние карточки показывают сводку: сколько всего статей собрано, сколько релевантных, сколько ревью готово. Диаграммы разбивают базу по категориям и источникам парсинга." },
+    { t:"Запуск парсера и ревью",
+      b:"Кнопки действий запускают сбор новых статей из выбранных источников (arXiv, CrossRef, CORE и др.) и генерацию LLM-ревью. Прогресс отображается прямо на кнопке." },
+    { t:"Дайджест на почту",
+      b:"Кнопка «Отправить дайджест» собирает подборку ревью за неделю/месяц/квартал и отправляет на указанный email. Есть список постоянных подписчиков." },
+    { t:"Поиск по базе",
+      b:"Гибридный поиск (семантика + ключевые слова) находит статьи и ревью по смыслу запроса. Кликните на результат — откроется карточка с полным ревью." },
+  ];
+
+  let onbIdx = 0;
+  const onbModal = $("#onb-modal");
+
+  function onbRender(){
+    const s = ONB_STEPS[onbIdx];
+    $("#onb-title").textContent = s.t;
+    $("#onb-body").textContent = s.b;
+    $("#onb-step-badge").textContent = `Шаг ${onbIdx+1} из ${ONB_STEPS.length}`;
+    const dots = ONB_STEPS.map((_,i)=>
+      `<div style="flex:1;height:6px;border:2px solid var(--ink);background:${i<=onbIdx?'var(--orange)':'#fff'}"></div>`
+    ).join("");
+    $("#onb-dots").innerHTML = dots;
+    $("#onb-prev").style.visibility = onbIdx===0 ? "hidden" : "visible";
+    $("#onb-next").textContent = onbIdx===ONB_STEPS.length-1 ? "готово" : "далее";
+  }
+
+  async function onbEvent(event, extra){
+    try{
+      await fetch("/api/onboarding/event", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(Object.assign({event}, extra||{}))
+      });
+    }catch(_){}
+  }
+
+  function onbOpen(){
+    onbIdx = 0;
+    onbRender();
+    onbModal.classList.add("on");
+    onbEvent("shown");
+    onbEvent("step_view", {step:1});
+  }
+
+  function onbClose(){
+    onbModal.classList.remove("on");
+  }
+
+  $("#onb-next").onclick = ()=>{
+    if(onbIdx === ONB_STEPS.length-1){
+      onbEvent("completed", {step:onbIdx+1});
+      onbClose();
+      return;
+    }
+    onbIdx++;
+    onbRender();
+    onbEvent("step_view", {step:onbIdx+1});
+  };
+  $("#onb-prev").onclick = ()=>{ if(onbIdx>0){ onbIdx--; onbRender(); } };
+  $("#onb-skip").onclick = ()=>{ onbEvent("skipped", {step:onbIdx+1}); onbClose(); };
+
+  async function onbInit(){
+    try{
+      const r = await fetch("/api/onboarding/status", {credentials:"same-origin"});
+      const j = await r.json();
+      if(j && j.ok && j.should_show){ onbOpen(); }
+    }catch(_){}
+  }
+  onbInit();
+})();
+</script>

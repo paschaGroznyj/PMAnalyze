@@ -9,7 +9,9 @@ import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, BackgroundTasks, Request
+import uuid
+
+from fastapi import FastAPI, BackgroundTasks, Request, Response
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
@@ -36,6 +38,18 @@ DIGEST_ENABLED = os.getenv("DIGEST_ENABLED", "1").lower() in ("1", "true", "yes"
 DIGEST_WEEKLY_DOW_MSK = int(os.getenv("DIGEST_WEEKLY_DOW_MSK", "1"))      # 1=вторник
 DIGEST_WEEKLY_HOUR_MSK = int(os.getenv("DIGEST_WEEKLY_HOUR_MSK", "10"))   # 10:00 MSK
 DIGEST_WEEKLY_MINUTE_MSK = int(os.getenv("DIGEST_WEEKLY_MINUTE_MSK", "0"))
+UI_ACCESS_RETENTION_DAYS = int(os.getenv("UI_ACCESS_RETENTION_DAYS", "90"))
+
+# --- Onboarding / визитор-кука (фундамент под Authentik) ---
+# Сейчас: идентификация по ip + куке браузера (visitor_id).
+# Потом: подхватим user из заголовков Authentik-аутпоста, без переписывания.
+ONBOARDING_COOKIE = os.getenv("ONBOARDING_COOKIE", "pma_visitor")
+ONBOARDING_COOKIE_MAX_AGE = int(os.getenv("ONBOARDING_COOKIE_MAX_AGE", str(60 * 60 * 24 * 365)))  # 1 год
+# Заголовки, которые прокидывает Authentik forward-auth outpost (появятся позже)
+AUTHENTIK_HEADER_USERNAME = os.getenv("AUTHENTIK_HEADER_USERNAME", "x-authentik-username")
+AUTHENTIK_HEADER_UID = os.getenv("AUTHENTIK_HEADER_UID", "x-authentik-uid")
+AUTHENTIK_HEADER_EMAIL = os.getenv("AUTHENTIK_HEADER_EMAIL", "x-authentik-email")
+AUTHENTIK_HEADER_GROUPS = os.getenv("AUTHENTIK_HEADER_GROUPS", "x-authentik-groups")
 
 pipeline: PMAnalyzePipeline | None = None
 pool: asyncpg.Pool | None = None
@@ -60,6 +74,56 @@ async def lifespan(app: FastAPI):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+        """)
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.ui_access_log (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ip TEXT NOT NULL,
+                user_agent TEXT,
+                referer TEXT,
+                path TEXT NOT NULL,
+                query TEXT
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ui_access_log_created_at
+            ON process_mining.ui_access_log(created_at DESC)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ui_access_log_ip
+            ON process_mining.ui_access_log(ip)
+        """)
+
+        # Онбординг-события. Сейчас ключ = visitor_id(кука) + ip.
+        # user_id / username / email / groups заполнятся позже из Authentik.
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.ui_onboarding (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                visitor_id TEXT NOT NULL,
+                ip TEXT,
+                user_id TEXT,
+                username TEXT,
+                email TEXT,
+                groups TEXT,
+                event TEXT NOT NULL,
+                step INT,
+                meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                user_agent TEXT
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ui_onboarding_visitor
+            ON process_mining.ui_onboarding(visitor_id)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ui_onboarding_event
+            ON process_mining.ui_onboarding(event)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ui_onboarding_created_at
+            ON process_mining.ui_onboarding(created_at DESC)
         """)
 
     await pipeline.start()
@@ -253,11 +317,189 @@ def _normalize_authors_payload(raw):
     return clean_list([raw])
 
 
+def _extract_client_ip(request: Request) -> str:
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        return xff.split(",")[0].strip()[:64]
+    xrip = (request.headers.get("x-real-ip") or "").strip()
+    if xrip:
+        return xrip[:64]
+    if request.client and request.client.host:
+        return str(request.client.host)[:64]
+    return "unknown"
+
+
+async def _log_ui_access(request: Request):
+    try:
+        ip = _extract_client_ip(request)
+        ua = (request.headers.get("user-agent") or "")[:512]
+        ref = (request.headers.get("referer") or "")[:1024]
+        path = (request.url.path or "")[:256]
+        query = (request.url.query or "")[:1024]
+        retention = max(1, int(UI_ACCESS_RETENTION_DAYS or 90))
+
+        async with pool.acquire() as con:
+            await con.execute(
+                """
+                INSERT INTO process_mining.ui_access_log(ip, user_agent, referer, path, query)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                ip, ua, ref, path, query,
+            )
+            await con.execute(
+                """
+                DELETE FROM process_mining.ui_access_log
+                WHERE created_at < NOW() - make_interval(days => $1)
+                """,
+                retention,
+            )
+    except Exception as e:
+        api_logger.warning(f"ui_access_log_error: {e}")
+
+
+# ---------------- Identity / Onboarding (фундамент под Authentik) ----------------
+def current_identity(request: Request) -> dict:
+    """Текущий пользователь.
+
+    Сейчас Authentik ещё нет — заголовков не будет, вернётся анонимный dict.
+    Когда включат forward-auth outpost, аутпост начнёт прокидывать
+    X-authentik-* заголовки, и этот же код автоматически заполнит поля.
+    Логику вызова менять не потребуется.
+    """
+    h = request.headers
+    username = (h.get(AUTHENTIK_HEADER_USERNAME) or "").strip() or None
+    uid = (h.get(AUTHENTIK_HEADER_UID) or "").strip() or None
+    email = (h.get(AUTHENTIK_HEADER_EMAIL) or "").strip() or None
+    groups = (h.get(AUTHENTIK_HEADER_GROUPS) or "").strip() or None
+    return {
+        "authenticated": bool(username or uid),
+        "user_id": uid,
+        "username": username,
+        "email": email,
+        "groups": groups,
+    }
+
+
+def _get_visitor_id(request: Request) -> str | None:
+    v = (request.cookies.get(ONBOARDING_COOKIE) or "").strip()
+    return v or None
+
+
+def _ensure_visitor_cookie(request: Request, response: Response) -> str:
+    """Читает visitor_id из куки, если нет — генерит и ставит куку."""
+    vid = _get_visitor_id(request)
+    if not vid:
+        vid = uuid.uuid4().hex
+        response.set_cookie(
+            key=ONBOARDING_COOKIE,
+            value=vid,
+            max_age=ONBOARDING_COOKIE_MAX_AGE,
+            httponly=False,   # фронт может прочитать при желании; не секрет
+            samesite="lax",
+            path="/",
+        )
+    return vid
+
+
 # ---------------- Dashboard (Jinja-free: статичный HTML) ----------------
 @app.get("/", response_class=HTMLResponse)
-async def dashboard():
+async def dashboard(request: Request):
+    await _log_ui_access(request)
+    resp = HTMLResponse("")
+    _ensure_visitor_cookie(request, resp)
     with open(os.path.join(TEMPLATES_DIR, "dashboard.html"), encoding="utf-8") as f:
-        return HTMLResponse(f.read())
+        html = f.read()
+    # Склейка партиала онбординг-тура перед </body>.
+    onb_path = os.path.join(TEMPLATES_DIR, "_onboarding.html")
+    if os.path.exists(onb_path):
+        with open(onb_path, encoding="utf-8") as f:
+            onb_html = f.read()
+        html = html.replace("</body>", onb_html + "\n</body>", 1)
+    resp.body = html.encode("utf-8")
+    resp.headers["content-length"] = str(len(resp.body))
+    return resp
+
+
+# ---------------- Onboarding API ----------------
+class OnboardingEventReq(BaseModel):
+    event: str                     # 'shown' | 'completed' | 'skipped' | 'step_view'
+    step: int | None = None
+    meta: dict | None = None
+
+
+_ONB_TERMINAL_EVENTS = ("completed", "skipped")
+_ONB_ALLOWED_EVENTS = ("shown", "completed", "skipped", "step_view")
+
+
+@app.get("/api/onboarding/status")
+async def onboarding_status(request: Request):
+    """Показывать ли онбординг. Показ один раз: после completed/skipped — нет."""
+    resp_cookie = Response()
+    vid = _ensure_visitor_cookie(request, resp_cookie)
+    ident = current_identity(request)
+
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            """
+            SELECT 1
+            FROM process_mining.ui_onboarding
+            WHERE visitor_id = $1 AND event = ANY($2::text[])
+            LIMIT 1
+            """,
+            vid, list(_ONB_TERMINAL_EVENTS),
+        )
+    seen = row is not None
+    payload = {
+        "ok": True,
+        "visitor_id": vid,
+        "should_show": not seen,
+        "authenticated": ident["authenticated"],
+        "username": ident["username"],
+    }
+    out = JSONResponse(payload)
+    # переносим Set-Cookie, если кука только что создана
+    sc = resp_cookie.headers.get("set-cookie")
+    if sc:
+        out.headers["set-cookie"] = sc
+    return out
+
+
+@app.post("/api/onboarding/event")
+async def onboarding_event(req: OnboardingEventReq, request: Request):
+    if req.event not in _ONB_ALLOWED_EVENTS:
+        return JSONResponse({"ok": False, "error": "bad_event"}, status_code=400)
+
+    resp_cookie = Response()
+    vid = _ensure_visitor_cookie(request, resp_cookie)
+    ident = current_identity(request)
+    ip = _extract_client_ip(request)
+    ua = (request.headers.get("user-agent") or "")[:512]
+    meta_json = json.dumps(req.meta or {}, ensure_ascii=False)
+
+    async with pool.acquire() as con:
+        await con.execute(
+            """
+            INSERT INTO process_mining.ui_onboarding
+                (visitor_id, ip, user_id, username, email, groups, event, step, meta, user_agent)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
+            """,
+            vid, ip,
+            ident["user_id"], ident["username"], ident["email"], ident["groups"],
+            req.event, req.step, meta_json, ua,
+        )
+
+    out = JSONResponse({"ok": True, "visitor_id": vid, "event": req.event})
+    sc = resp_cookie.headers.get("set-cookie")
+    if sc:
+        out.headers["set-cookie"] = sc
+    return out
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    """Кто я сейчас. До Authentik — аноним + visitor_id. Полезно фронту/дебагу."""
+    ident = current_identity(request)
+    return {"ok": True, "visitor_id": _get_visitor_id(request), **ident}
 
 
 @app.get("/health")
@@ -299,18 +541,32 @@ async def stats():
             WHERE is_relevant = TRUE
             GROUP BY 1
         """)
-        # динамика по неделям (последние 8)
+        src_rows = await con.fetch("""
+            SELECT lower(coalesce(source,'')) AS source, count(*)::int AS c
+            FROM process_mining.papers_metadata
+            GROUP BY 1
+            ORDER BY 2 DESC
+        """)
+        # динамика по дням (последние 14 дней, включая пустые даты)
         dyn_rows = await con.fetch("""
-            SELECT to_char(date_trunc('week', p.created_at), 'DD.MM') wk,
-                   count(*) FILTER (WHERE p.is_relevant = TRUE) collected,
-                   count(*) FILTER (
+            WITH days AS (
+                SELECT generate_series(
+                    date_trunc('day', now()) - interval '13 days',
+                    date_trunc('day', now()),
+                    interval '1 day'
+                ) AS d
+            )
+            SELECT to_char(days.d, 'DD.MM') AS wk,
+                   COALESCE(count(*) FILTER (WHERE p.is_relevant = TRUE), 0) AS collected,
+                   COALESCE(count(*) FILTER (
                        WHERE p.is_relevant = TRUE
                          AND EXISTS (SELECT 1 FROM process_mining.reviews r WHERE r.article_id = p.id)
-                   ) processed
-            FROM process_mining.papers_metadata p
-            WHERE p.created_at >= now() - interval '8 weeks'
-            GROUP BY date_trunc('week', p.created_at)
-            ORDER BY date_trunc('week', p.created_at)
+                   ), 0) AS processed
+            FROM days
+            LEFT JOIN process_mining.papers_metadata p
+              ON date_trunc('day', p.created_at) = days.d
+            GROUP BY days.d
+            ORDER BY days.d
         """)
     # Группируем по префиксу до ':' — реальные категории вида
     # "Общие принципы: Моделирование в PM" схлопываются в "Общие принципы".
@@ -319,6 +575,7 @@ async def stats():
     for r in cat_rows:
         grp = (r["grp"] or "").strip() or "Без категории"
         by_category[grp] = by_category.get(grp, 0) + r["c"]
+    by_source = { (r["source"] or "unknown"): int(r["c"]) for r in src_rows }
     return {
         "ok": True,
         "total": base["total"], "relevant": base["relevant"], "reviewed": base["reviewed"],
@@ -326,6 +583,7 @@ async def stats():
         "invalid_sources": base["invalid_sources"],
         "week_new": base["week_new"], "avg_relevance": float(base["avg_relevance"]),
         "by_category": by_category,
+        "by_source": by_source,
         "dynamics": {
             "labels":    [r["wk"] for r in dyn_rows],
             "collected": [r["collected"] for r in dyn_rows],
@@ -335,12 +593,26 @@ async def stats():
 
 
 # ---------------- Ручные кнопки ----------------
+class RunParserReq(BaseModel):
+    include_sources: list[str] = []
+
+
 @app.post("/api/run/parser")
-async def run_parser(background: BackgroundTasks, request: Request):
+async def run_parser(body: RunParserReq | None = None, background: BackgroundTasks = None, request: Request = None):
     """Полный цикл: сбор -> релевантность -> ревью (фоново)."""
     client_ip = (request.client.host if request and request.client else "unknown")
-    ua = request.headers.get("user-agent", "")[:180]
-    api_logger.info(f"parser_button_click ip={client_ip} ua={ua}")
+    ua = request.headers.get("user-agent", "")[:180] if request else ""
+
+    allowed = {"arxiv_api","arxiv_html","crossref","core_api","fluxicon","google_scholar"}
+    include_sources = []
+    for s in ((body.include_sources if body else []) or []):
+        k = str(s or "").strip().lower()
+        if k in allowed and k not in include_sources:
+            include_sources.append(k)
+    if not include_sources:
+        include_sources = ["arxiv_api","arxiv_html","crossref","core_api","fluxicon","google_scholar"]
+
+    api_logger.info(f"parser_button_click ip={client_ip} ua={ua} include_sources={','.join(include_sources)}")
     # Блокируем спам запуска в пределах инстанса
     if not await pipeline._try_claim_parser_run():
         api_logger.info("parser_button_reject reason=parser_already_running")
@@ -354,13 +626,13 @@ async def run_parser(background: BackgroundTasks, request: Request):
 
     async def _run_parser_prelocked():
         try:
-            await pipeline.run_once()
+            await pipeline.run_once(parser_sources=include_sources)
         finally:
             await pipeline._release_parser_run()
 
     background.add_task(_run_parser_prelocked)
     api_logger.info("parser_button_accepted status=started")
-    return {"ok": True, "status": "started"}
+    return {"ok": True, "status": "started", "include_sources": include_sources}
 
 
 @app.post("/api/run/reviews")

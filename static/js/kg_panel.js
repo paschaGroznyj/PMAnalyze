@@ -186,35 +186,45 @@
     const md = String(summary || "");
     let html = mdToHtml(md);
     const refs = [];
-    const re = /\[(\d+)\]/g;
+    const refGroupRe = /\[((?:\d+\s*(?:,\s*\d+\s*)*))\]/g;
     let m;
-    while((m = re.exec(md)) !== null){
-      const idx = Number(m[1]);
-      if(Number.isFinite(idx) && idx >= 1 && idx <= (items?.length || 0) && !refs.includes(idx)) refs.push(idx);
+    while((m = refGroupRe.exec(md)) !== null){
+      const nums = String(m[1] || "")
+        .split(",")
+        .map(s => Number(String(s || "").trim()))
+        .filter(n => Number.isFinite(n));
+      for(const idx of nums){
+        if(idx >= 1 && idx <= (items?.length || 0) && !refs.includes(idx)) refs.push(idx);
+      }
     }
 
     const title = `<div class="mono" style="font-size:12px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-саммари · ${esc(meta || "")}</div>`;
 
-    // Внедряем ссылки ПРЯМО в текст саммари: [n] -> кликабельный [n]
-    html = html.replace(/\[(\d+)\]/g, (_all, g1)=>{
-      const idx = Number(g1);
-      if(!Number.isFinite(idx) || idx < 1 || idx > (items?.length || 0)) return `[${esc(String(g1))}]`;
+    const mkRef = (idx)=>{
+      if(!Number.isFinite(idx) || idx < 1 || idx > (items?.length || 0)) return `[${esc(String(idx))}]`;
       const it = items[idx - 1] || {};
       const nodeId = String(it.node_id || "");
       const kind = it.kind === "wiki" ? "wiki" : "knowledge";
       if(!nodeId) return `[${idx}]`;
       return `<a href="#" class="kg-ref-link" data-ref-index="${idx}" data-node-id="${esc(nodeId)}" data-kind="${kind}">[${idx}]</a>`;
+    };
+
+    // Внедряем ссылки прямо в текст саммари:
+    // [n] и составные [n, m] -> кликабельные [n], [m]
+    html = html.replace(/\[((?:\d+\s*(?:,\s*\d+\s*)*))\]/g, (_all, body)=>{
+      const nums = String(body || "")
+        .split(",")
+        .map(s => Number(String(s || "").trim()))
+        .filter(n => Number.isFinite(n));
+      if(!nums.length) return _all;
+      return nums.map((n)=>mkRef(n)).join(", ");
     });
 
     if(!refs.length) return `${title}${html}`;
 
-    const links = refs.map((idx)=>{
-      const it = items[idx - 1] || {};
-      const nodeId = String(it.node_id || "");
-      const kind = it.kind === "wiki" ? "wiki" : "knowledge";
-      if(!nodeId) return `[${idx}]`;
-      return `<a href="#" class="kg-ref-link" data-ref-index="${idx}" data-node-id="${esc(nodeId)}" data-kind="${kind}">[${idx}]</a>`;
-    }).join(" ");
+    const links = refs
+      .map((idx)=>mkRef(idx))
+      .join(" ");
 
     return `${title}${html}<div class="mono" style="margin-top:10px;font-size:12px;color:#6b6055">Источники: ${links}</div>`;
   }
@@ -227,19 +237,24 @@
         const nodeId = a.getAttribute("data-node-id") || "";
         if(!nodeId) return;
 
-        try{
-          network?.focus(nodeId, {
-            scale: 1.18,
-            animation: {duration: 900, easingFunction: "easeInOutQuad"}
-          });
-          nodesDS?.update([{id: nodeId, borderWidth: 4}]);
-          setTimeout(()=>{
-            try{ nodesDS?.update([{id: nodeId, borderWidth: 2}]); }catch(_){ }
-          }, 1400);
-        }catch(_){ }
+        // Плавно скроллим к графу, затем фокусируем узел
+        try{ graphEl?.scrollIntoView({behavior:"smooth", block:"center"}); }catch(_){ }
 
-        // Даем анимации дойти до узла перед открытием карточки
-        setTimeout(()=> openCard(nodeId), 980);
+        setTimeout(()=>{
+          try{
+            network?.focus(nodeId, {
+              scale: 1.18,
+              animation: {duration: 1000, easingFunction: "easeInOutQuad"}
+            });
+            nodesDS?.update([{id: nodeId, borderWidth: 4}]);
+            setTimeout(()=>{
+              try{ nodesDS?.update([{id: nodeId, borderWidth: 2}]); }catch(_){ }
+            }, 1600);
+          }catch(_){ }
+        }, 220);
+
+        // Даем скроллу + анимации дойти до узла перед открытием карточки
+        setTimeout(()=> openCard(nodeId), 1320);
       });
     });
   }

@@ -225,6 +225,9 @@
     .t-title{max-width:200px}
     .search-inp-wrap{min-width:0}
     .quick-drop{max-width:100%}
+    .kg-head{flex-direction:column; align-items:center; text-align:center; gap:8px}
+    .kg-actions{width:100%; justify-content:center}
+    .kg-info{display:block; text-align:center}
   }
   @media(max-width:500px){
     body{padding:12px}
@@ -235,6 +238,9 @@
     .kpis{grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px}
     .kpi{padding:14px 12px}
     .kpi .num{font-size:32px}
+    .kg-refresh{width:36px; height:36px}
+    .btn.kg-toggle{min-height:44px; width:100%; justify-content:center; text-align:center}
+    .btn.kg-toggle.running{padding-left:44px; padding-right:44px}
   }
 
   /* ===== WEATHER WIDGET ===== */
@@ -314,10 +320,10 @@
   .kg-info{font-size:10px; color:#6b6055; letter-spacing:.04em}
   .btn.danger{background:#fff; color:var(--ink); border-color:var(--ink)}
   .btn.danger:hover{box-shadow:4px 4px 0 #e77a57}
-  .btn.kg-toggle{display:inline-flex; align-items:center; gap:8px}
-  .btn.kg-toggle .kg-stop-ico{display:none; width:18px; height:18px; border:2px solid var(--ink); border-radius:999px; align-items:center; justify-content:center; background:#fff}
-  .btn.kg-toggle .kg-stop-ico .sq{width:8px; height:8px; background:var(--orange); border:1px solid var(--ink)}
-  .btn.kg-toggle.running{background:#FFF1E9; border-color:var(--ink)}
+  .btn.kg-toggle{display:inline-flex; align-items:center; justify-content:center; text-align:center; gap:8px; position:relative; padding-left:16px; padding-right:16px}
+  .btn.kg-toggle .kg-stop-ico{display:none; width:26px; height:26px; border:2px solid var(--ink); border-radius:999px; align-items:center; justify-content:center; background:#fff; position:absolute; right:8px; top:50%; transform:translateY(-50%)}
+  .btn.kg-toggle .kg-stop-ico .sq{width:11px; height:11px; background:var(--orange); border:1px solid var(--ink)}
+  .btn.kg-toggle.running{background:#FFF1E9; border-color:var(--ink); padding-left:44px; padding-right:44px}
   .btn.kg-toggle.running .kg-stop-ico{display:inline-flex}
   .btn.kg-toggle.running:hover{box-shadow:4px 4px 0 #e77a57}
   #kg-canvas{height:520px; border:2px solid var(--ink); background:#fff}
@@ -556,7 +562,7 @@
     <div class="pager" id="pager"></div>
   </div>
 
-  <div class="marquee"><span id="mq-text">PMAnalyze · loading…</span></div>
+  <div class="marquee"><span id="mq-text">PMAnalyze · loading… · powered by CatchPM ·</span></div>
 </div>
 
 <!-- ARTICLE / REVIEW MODAL -->
@@ -812,7 +818,7 @@ async function loadStats(){
       {label:"pdf прочитано", value:d.reviewed},
       {label:"ревью готово", value:d.reviewed},
     ]);
-    setTextIfChanged("#mq-text", `PMAnalyze · всего ${d.total} · релевантных ${d.relevant} · ревью ${d.reviewed} · невалидные источники ${d.invalid_sources ?? 0} · за неделю +${d.week_new} · avg relevance ${d.avg_relevance} ·`);
+    setTextIfChanged("#mq-text", `PMAnalyze · всего ${d.total} · релевантных ${d.relevant} · ревью ${d.reviewed} · невалидные источники ${d.invalid_sources ?? 0} · за неделю +${d.week_new} · avg relevance ${d.avg_relevance} · powered by CatchPM ·`);
   }catch(e){ toast("Ошибка загрузки статистики"); console.error(e); }
 }
 

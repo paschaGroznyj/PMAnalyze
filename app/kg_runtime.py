@@ -342,7 +342,7 @@ class KGRunManager:
 
             row = await con.fetchrow(
                 """
-                SELECT id, title, content_md, source_ids, links, index_entry, status, importance, created_at, updated_at
+                SELECT id, title, content_md, source_ids, source_url, links, index_entry, status, importance, created_at, updated_at
                 FROM process_mining.wiki_pages
                 WHERE id=$1
                 """,
@@ -350,15 +350,18 @@ class KGRunManager:
             )
             if not row:
                 return {"ok": False, "error": "not_found"}
-            links = row["links"] if isinstance(row["links"], list) else []
-            source_url = ""
-            for u in links:
-                su = str(u or "").strip()
-                if su.startswith("http://") or su.startswith("https://"):
-                    source_url = su
-                    break
+            source_url = str(row["source_url"] or "").strip()
 
-            # Fallback: если в wiki.links нет валидного URL, пробуем взять source
+            # Совместимость со старыми данными: если source_url пустой, пробуем legacy links[].
+            links = row["links"] if isinstance(row["links"], list) else []
+            if not source_url:
+                for u in links:
+                    su = str(u or "").strip()
+                    if su.startswith("http://") or su.startswith("https://"):
+                        source_url = su
+                        break
+
+            # Fallback: если в wiki нет валидного URL, пробуем взять source
             # из metadata_knowledge связанных knowledge-узлов (source_ids).
             src_ids = self._coerce_id_list(row["source_ids"])
             if not source_url and src_ids:
@@ -383,7 +386,6 @@ class KGRunManager:
                 "title": row["title"] or f"Wiki #{rid}",
                 "text": row["content_md"] or "",
                 "source_ids": row["source_ids"] if isinstance(row["source_ids"], list) else [],
-                "links": links,
                 "source_url": source_url,
                 "index_entry": row["index_entry"] or "",
                 "importance": float(row["importance"] or 0),

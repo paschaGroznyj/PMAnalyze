@@ -1559,7 +1559,7 @@ class PMAnalyzePipeline:
                                         )
                                 else:
                                     w_status = "active" if w_verdict == "pass" else "draft"
-                                    links_json = json.dumps([source_url] if source_url else [])
+                                    source_url_text = (source_url or "").strip()
                                     src_ids_json = json.dumps(src_ids)
                                     async with self.pool.acquire() as con:
                                         existing_wid = await con.fetchval(
@@ -1569,7 +1569,7 @@ class PMAnalyzePipeline:
                                             WHERE title = $1
                                               AND index_entry = $2
                                               AND (
-                                                    ($3 <> '' AND links @> to_jsonb(ARRAY[$3]::text[]))
+                                                    ($3 <> '' AND COALESCE(source_url,'') = $3)
                                                  OR ($3 = '' AND source_ids = $4::jsonb)
                                               )
                                             ORDER BY id DESC
@@ -1577,7 +1577,7 @@ class PMAnalyzePipeline:
                                             """,
                                             title,
                                             index_entry,
-                                            source_url or "",
+                                            source_url_text,
                                             src_ids_json,
                                         )
 
@@ -1585,14 +1585,14 @@ class PMAnalyzePipeline:
                                             wid = await con.fetchval(
                                                 """
                                                 INSERT INTO process_mining.wiki_pages
-                                                    (title, content_md, source_ids, links, index_entry, status, importance, created_at, updated_at)
-                                                VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, now(), now())
+                                                    (title, content_md, source_ids, source_url, index_entry, status, importance, created_at, updated_at)
+                                                VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, now(), now())
                                                 RETURNING id
                                                 """,
                                                 title,
                                                 content_md,
                                                 src_ids_json,
-                                                links_json,
+                                                source_url_text,
                                                 index_entry,
                                                 w_status,
                                                 wimp,
@@ -1605,7 +1605,7 @@ class PMAnalyzePipeline:
                                                 UPDATE process_mining.wiki_pages
                                                 SET content_md = $2,
                                                     source_ids = $3::jsonb,
-                                                    links = $4::jsonb,
+                                                    source_url = $4,
                                                     status = $5,
                                                     importance = $6,
                                                     updated_at = now()
@@ -1614,7 +1614,7 @@ class PMAnalyzePipeline:
                                                 wid,
                                                 content_md,
                                                 src_ids_json,
-                                                links_json,
+                                                source_url_text,
                                                 w_status,
                                                 wimp,
                                             )

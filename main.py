@@ -165,6 +165,22 @@ async def lifespan(app: FastAPI):
         """)
 
         await con.execute("""
+            ALTER TABLE process_mining.wiki_pages
+            ADD COLUMN IF NOT EXISTS source_url TEXT
+        """)
+        await con.execute("""
+            UPDATE process_mining.wiki_pages w
+            SET source_url = u.url
+            FROM LATERAL (
+                SELECT elem AS url
+                FROM jsonb_array_elements_text(COALESCE(w.links, '[]'::jsonb)) AS elem
+                WHERE elem ~ '^https?://'
+                LIMIT 1
+            ) AS u
+            WHERE COALESCE(w.source_url, '') = ''
+        """)
+
+        await con.execute("""
             CREATE TABLE IF NOT EXISTS process_mining.knowledge_embeddings (
                 knowledge_id INTEGER PRIMARY KEY
                     REFERENCES process_mining.knowledge(id) ON DELETE CASCADE,

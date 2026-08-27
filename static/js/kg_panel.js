@@ -289,7 +289,7 @@
 
       const sourceUrl = (
         (typeof d.source_url === "string" && /^https?:\/\//i.test(d.source_url.trim()) && d.source_url.trim())
-        || (Array.isArray(d.links) ? (d.links.map(x=>String(x||"").trim()).find(x=>/^https?:\/\//i.test(x)) || "") : "")
+        || ""
       );
 
       if(d.kind === "wiki" && sourceUrl){

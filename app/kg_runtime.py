@@ -350,6 +350,13 @@ class KGRunManager:
             )
             if not row:
                 return {"ok": False, "error": "not_found"}
+            links = row["links"] if isinstance(row["links"], list) else []
+            source_url = ""
+            for u in links:
+                su = str(u or "").strip()
+                if su.startswith("http://") or su.startswith("https://"):
+                    source_url = su
+                    break
             return {
                 "ok": True,
                 "kind": "wiki",
@@ -357,7 +364,8 @@ class KGRunManager:
                 "title": row["title"] or f"Wiki #{rid}",
                 "text": row["content_md"] or "",
                 "source_ids": row["source_ids"] if isinstance(row["source_ids"], list) else [],
-                "links": row["links"] if isinstance(row["links"], list) else [],
+                "links": links,
+                "source_url": source_url,
                 "index_entry": row["index_entry"] or "",
                 "importance": float(row["importance"] or 0),
                 "status": row["status"],

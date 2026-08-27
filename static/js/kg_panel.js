@@ -220,13 +220,8 @@
       return nums.map((n)=>mkRef(n)).join(", ");
     });
 
-    if(!refs.length) return `${title}${html}`;
-
-    const links = refs
-      .map((idx)=>mkRef(idx))
-      .join(" ");
-
-    return `${title}${html}<div class="mono" style="margin-top:10px;font-size:12px;color:#6b6055">Источники: ${links}</div>`;
+    // Нижний блок "Источники" убираем: ссылки остаются только внутри текста LLM.
+    return `${title}${html}`;
   }
 
   function wireSummaryRefLinks(){
@@ -291,6 +286,16 @@
       byId("kg-card-body").innerHTML = `<p>${mdToHtml(d.text||"")}</p>`;
       const foot = byId("kg-card-foot");
       foot.innerHTML = "";
+
+      if(d.kind === "wiki" && d.source_url){
+        const a = document.createElement("a");
+        a.className = "btn";
+        a.href = d.source_url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = "открыть источник";
+        foot.appendChild(a);
+      }
 
       if(d.article_id && typeof window.openArticle === "function"){
         const btn = document.createElement("button");

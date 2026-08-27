@@ -484,9 +484,6 @@
           </button>
         </div>
         <label class="filter mono search-llm">
-          <input type="checkbox" id="kg-search-ctx"> в контекст модели
-        </label>
-        <label class="filter mono search-llm">
           <input type="checkbox" id="kg-search-llm"> LLM-саммари
         </label>
       </div>
@@ -1453,11 +1450,7 @@ async function runHybrid(){
   sRes.innerHTML = `<div class="search-empty">Ищу…</div>`;
   const wantLlm = sLlm.checked;
 
-  const kgCtxEnabled = document.getElementById("kg-search-ctx")?.checked;
-  const kgCtxRaw = (window.__kg_graph_context || "").trim();
-  const qWithCtx = (kgCtxEnabled && kgCtxRaw)
-    ? `${q}\n\nКонтекст из knowledge graph:\n${kgCtxRaw}`
-    : q;
+  const qWithCtx = q;
 
   try{
     const r = await fetch("/api/search/hybrid", {

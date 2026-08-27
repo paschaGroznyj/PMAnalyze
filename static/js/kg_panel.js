@@ -12,7 +12,6 @@
   const searchBox = byId("kg-search-box");
   const searchQ = byId("kg-search-q");
   const searchGo = byId("kg-search-go");
-  const searchCtx = byId("kg-search-ctx");
   const searchLlm = byId("kg-search-llm");
   const depthEl = byId("kg-depth");
   const depthVal = byId("kg-depth-val");
@@ -39,6 +38,8 @@
 
   let lastMatches = [];
   let lastSelection = new Set();
+
+  const MAX_CTX = 15; // лимит чанков, реально уходящих в модель
 
   function esc(s){
     return String(s||"").replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
@@ -335,38 +336,79 @@
       const title = String(raw.title || raw.label || "").replace(/\s+/g, " ").trim();
       if(!title) continue;
       rows.push(`[d${d}] ${title}`);
-      if(rows.length >= 18) break;
     }
     return rows;
   }
 
-  async function runKgSummary(q, ctxRows){
-    if(!searchSummary) return;
-    const ctx = ctxRows && ctxRows.length ? ctxRows.join("\n") : "";
-    const withCtx = (searchCtx && searchCtx.checked && ctx)
-      ? `${q}\n\nКонтекст из knowledge graph:\n${ctx}`
-      : q;
-    searchSummary.style.display = "block";
-    searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#6b6055">Генерирую LLM-summary…</span>`;
+  // Гибридный поиск по узлам графа. Идёт на сервер ВСЕГДА (по лупе/Enter),
+  // независимо от того, есть ли локальные совпадения подсветки.
+  async function runHybridKg(q){
+    if(!q || q.length < 2){
+      toast("Введите запрос (мин. 2 символа)");
+      return;
+    }
+    const depth = Math.max(1, Math.min(5, Number(depthEl?.value || 2)));
+    const wantSummary = !!(searchLlm && searchLlm.checked);
+
+    if(searchSummary){
+      searchSummary.style.display = "block";
+      searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#6b6055">Гибридный поиск по графу…</span>`;
+    }
+
+    let d;
     try{
-      const d = await fetchJson("/api/search/hybrid", {
+      d = await fetchJson("/api/kg/search", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({q: withCtx, limit: 8, llm_summary: true})
+        body: JSON.stringify({q, limit: 30, max_ctx: MAX_CTX, llm_summary: wantSummary})
       });
-      if(!d.ok){
-        searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Ошибка summary: ${esc(d.error||"unknown")}</span>`;
-        return;
-      }
-      if(d.summary){
-        searchSummary.innerHTML = `<div class="mono" style="font-size:10px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-summary</div>${mdToHtml(d.summary)}`;
-      }else if(d.summary_error){
-        searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Не удалось: ${esc(d.summary_error)}</span>`;
-      }else{
-        searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Summary не вернулся.</span>`;
-      }
     }catch(_){
-      searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Ошибка сети при summary.</span>`;
+      if(searchSummary) searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Ошибка сети при поиске.</span>`;
+      return;
+    }
+
+    if(!d || !d.ok){
+      if(searchSummary) searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Ошибка поиска: ${esc((d&&d.error)||"unknown")}</span>`;
+      return;
+    }
+
+    const found = Number(d.found || 0);
+    const used = Number(d.used || 0);
+    const maxCtx = Number(d.max_ctx || MAX_CTX);
+
+    // Обновляем бейдж и подсказку по РЕАЛЬНОМУ серверному результату.
+    if(chunksCount) chunksCount.textContent = `найдено ${found} · в модель ${used}/${maxCtx} · depth ${depth}`;
+
+    // Подсветим узлы, которые сервер вернул как результат гибридного поиска.
+    const serverNodeIds = (d.items || []).map(it => it.node_id).filter(Boolean);
+    const presentIds = serverNodeIds.filter(id => nodeRawMap.has(id));
+    if(presentIds.length){
+      const dmap = bfsDepth(presentIds, depth);
+      applySelection(presentIds, dmap, "depth");
+    }
+
+    if(searchHint){
+      searchHint.textContent = found
+        ? `Гибридный поиск: найдено ${found}, в модель ${used}/${maxCtx}. На графе подсвечено ${presentIds.length}.`
+        : `Гибридный поиск: совпадений в базе нет.`;
+    }
+
+    // Рендер summary
+    if(!searchSummary) return;
+    if(!wantSummary){
+      searchSummary.style.display = "none";
+      searchSummary.innerHTML = "";
+      return;
+    }
+    if(d.summary){
+      const meta = `найдено ${found} · в модель ${used}/${maxCtx}`;
+      searchSummary.innerHTML = `<div class="mono" style="font-size:10px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-саммари · ${meta}</div>${mdToHtml(d.summary)}`;
+    }else if(d.summary_error){
+      searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Не удалось: ${esc(d.summary_error)}</span>`;
+    }else if(found === 0){
+      searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Совпадений в базе нет — саммари не по чему строить.</span>`;
+    }else{
+      searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Саммари не вернулось.</span>`;
     }
   }
 
@@ -374,7 +416,8 @@
     if(!chunksCount) return;
     const num = Number(n||0);
     const d = Number(depth||depthEl?.value||0);
-    chunksCount.textContent = `чанков в модель: ${num} · depth ${d}`;
+    const used = Math.min(num, MAX_CTX);
+    chunksCount.textContent = `найдено ${num} · в модель ${used}/${MAX_CTX} · depth ${d}`;
   }
 
   function applyDepthRealtime(runSummary){
@@ -413,21 +456,17 @@
     applySelection(matches, dmap, "depth");
 
     const rows = buildContextFromSelection(dmap);
-    window.__kg_graph_context = rows.join("\n");
+    const ctxRows = rows.slice(0, MAX_CTX);
+    window.__kg_graph_context = ctxRows.join("\n");
     updateChunksBadge(rows.length, depth);
 
-    if(searchCtx && searchCtx.checked){
-      if(searchHint) searchHint.textContent = `Совпадений: ${matches.length}. Глубина ${depth}. В контексте: ${rows.length} чанков.`;
-    }else{
-      if(searchHint) searchHint.textContent = `Совпадений: ${matches.length}. Глубина ${depth}. Потенциально: ${rows.length} чанков (контекст выключен).`;
+    if(searchHint){
+      searchHint.textContent = `Совпадений: ${matches.length}. Глубина ${depth}. `
+        + `Найдено ${rows.length} чанков, в модель уходит ${ctxRows.length}/${MAX_CTX}.`;
     }
 
-    if(runSummary && searchLlm && searchLlm.checked){
-      runKgSummary(q, rows);
-    }else if(searchSummary && !runSummary){
-      searchSummary.style.display = "none";
-      searchSummary.innerHTML = "";
-    }
+    // Гибридный поиск / summary всегда идёт на сервер по лупе/Enter,
+    // даже если локальных совпадений подсветки нет — см. runHybridKg().
   }
 
   function applyRealtimeFilter(){
@@ -627,21 +666,13 @@
     searchQ.addEventListener("keydown", (e)=>{
       if(e.key === "Enter"){
         e.preventDefault();
-        applyDepthRealtime(true);
+        runHybridKg((searchQ.value || "").trim());
       }
     });
   }
 
   if(searchGo){
-    searchGo.onclick = ()=> applyDepthRealtime(true);
-  }
-
-  if(searchCtx){
-    searchCtx.addEventListener("change", ()=>{
-      if(!searchCtx.checked){
-        window.__kg_graph_context = "";
-      }
-    });
+    searchGo.onclick = ()=> runHybridKg((searchQ?.value || "").trim());
   }
 
   btnStart.onclick = async ()=>{

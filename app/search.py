@@ -166,3 +166,178 @@ async def search_hybrid(pool, q: str, limit: int = 10, rrf_k: int = 60) -> list[
             item["date_sub"] = ds.isoformat()
         results.append(item)
     return results
+
+
+# ---------------- 3. KG-HYBRID: поиск по узлам графа (knowledge + wiki) ----------------
+async def search_kg_hybrid(pool, q: str, limit: int = 15, rrf_k: int = 60) -> list[dict]:
+    """Гибридный поиск (BM25 tsvector + pgvector) по узлам графа знаний.
+
+    Ищет одновременно по process_mining.knowledge_embeddings (kind=knowledge)
+    и process_mining.wiki_page_embeddings (kind=wiki), сливает RRF.
+    Возвращает узлы с node_id вида 'k123' / 'w45' — совместимо с фронтом графа.
+    """
+    q = (q or "").strip()
+    if not q:
+        return []
+
+    qvec = await embed_text(q)
+    vec_lit = _vec_literal(qvec)
+
+    async with pool.acquire() as con:
+        # --- knowledge: BM25 + вектор ---
+        k_bm25 = await con.fetch(
+            """
+            SELECT ke.knowledge_id AS id,
+                   ts_rank_cd(ke.tsv, websearch_to_tsquery($2, $1)) AS score
+            FROM process_mining.knowledge_embeddings ke
+            WHERE ke.tsv @@ websearch_to_tsquery($2, $1)
+            ORDER BY score DESC
+            LIMIT 40
+            """,
+            q, TS_CONFIG,
+        )
+        k_vec = await con.fetch(
+            """
+            SELECT ke.knowledge_id AS id,
+                   1 - (ke.embedding <=> $1::vector) AS score
+            FROM process_mining.knowledge_embeddings ke
+            WHERE ke.embedding IS NOT NULL
+            ORDER BY ke.embedding <=> $1::vector
+            LIMIT 40
+            """,
+            vec_lit,
+        )
+        # --- wiki: BM25 + вектор ---
+        w_bm25 = await con.fetch(
+            """
+            SELECT we.wiki_page_id AS id,
+                   ts_rank_cd(we.tsv, websearch_to_tsquery($2, $1)) AS score
+            FROM process_mining.wiki_page_embeddings we
+            WHERE we.tsv @@ websearch_to_tsquery($2, $1)
+            ORDER BY score DESC
+            LIMIT 40
+            """,
+            q, TS_CONFIG,
+        )
+        w_vec = await con.fetch(
+            """
+            SELECT we.wiki_page_id AS id,
+                   1 - (we.embedding <=> $1::vector) AS score
+            FROM process_mining.wiki_page_embeddings we
+            WHERE we.embedding IS NOT NULL
+            ORDER BY we.embedding <=> $1::vector
+            LIMIT 40
+            """,
+            vec_lit,
+        )
+
+        # RRF-слияние с раздельными пространствами ключей (kind, id)
+        rank_scores: dict[tuple, float] = {}
+
+        def _accum(rows, kind):
+            for rank, row in enumerate(rows, 1):
+                key = (kind, row["id"])
+                rank_scores[key] = rank_scores.get(key, 0.0) + 1.0 / (rrf_k + rank)
+
+        _accum(k_bm25, "knowledge")
+        _accum(k_vec, "knowledge")
+        _accum(w_bm25, "wiki")
+        _accum(w_vec, "wiki")
+
+        if not rank_scores:
+            return []
+
+        top = sorted(rank_scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+        k_ids = [kid for (knd, kid), _ in top if knd == "knowledge"]
+        w_ids = [wid for (knd, wid), _ in top if knd == "wiki"]
+
+        k_meta = {}
+        if k_ids:
+            rows = await con.fetch(
+                """
+                SELECT k.id, k.text_knowledge, k.importance, k.status,
+                       ke.article_id, p.title AS article_title
+                FROM process_mining.knowledge k
+                LEFT JOIN process_mining.knowledge_embeddings ke ON ke.knowledge_id = k.id
+                LEFT JOIN process_mining.papers_metadata p ON p.id = ke.article_id
+                WHERE k.id = ANY($1::int[])
+                """,
+                k_ids,
+            )
+            k_meta = {r["id"]: dict(r) for r in rows}
+
+        w_meta = {}
+        if w_ids:
+            rows = await con.fetch(
+                """
+                SELECT w.id, w.title, w.content_md
+                FROM process_mining.wiki_pages w
+                WHERE w.id = ANY($1::int[])
+                """,
+                w_ids,
+            )
+            w_meta = {r["id"]: dict(r) for r in rows}
+
+    results = []
+    for (kind, _id), sc in top:
+        if kind == "knowledge":
+            m = k_meta.get(_id)
+            if not m:
+                continue
+            text = (m.get("text_knowledge") or "").strip()
+            results.append({
+                "node_id": f"k{_id}",
+                "kind": "knowledge",
+                "id": _id,
+                "title": (text[:120] or "Knowledge"),
+                "content": text,
+                "importance": float(m.get("importance") or 0),
+                "status": m.get("status"),
+                "article_id": m.get("article_id"),
+                "article_title": m.get("article_title"),
+                "score": round(sc, 6),
+            })
+        else:
+            m = w_meta.get(_id)
+            if not m:
+                continue
+            results.append({
+                "node_id": f"w{_id}",
+                "kind": "wiki",
+                "id": _id,
+                "title": m.get("title") or "Wiki page",
+                "content": (m.get("content_md") or ""),
+                "score": round(sc, 6),
+            })
+    return results
+
+
+async def llm_summary_kg(query: str, snippets: list[dict]) -> str:
+    """Саммари по найденным узлам графа знаний."""
+    ctx_parts = []
+    for i, s in enumerate(snippets, 1):
+        kind = "WIKI" if s.get("kind") == "wiki" else "KNOWLEDGE"
+        ctx_parts.append(f"[{i}] ({kind}) {s.get('title') or 'Без названия'}\n{(s.get('content') or '')[:2200]}")
+    context = "\n\n---\n\n".join(ctx_parts)
+    prompt = (
+        f"Ты аналитик Process Mining. По запросу пользователя нужно краткое саммари "
+        f"на основе найденных узлов графа знаний (knowledge-карточки и wiki-страницы). "
+        f"Отвечай по-русски, структурированно, без воды.\n\n"
+        f"Запрос: {query}\n\n"
+        f"Найденные узлы графа:\n{context}\n\n"
+        f"Дай связное саммари (3-6 предложений): что есть по теме запроса, ключевые идеи, "
+        f"на какие узлы стоит смотреть (ссылайся номерами [n])."
+    )
+    async with httpx.AsyncClient(timeout=90) as client:
+        r = await client.post(
+            f"{CLOUD_BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {CLOUD_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": LLM_MODEL,
+                "max_tokens": 2500,
+                "temperature": 0.5,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]

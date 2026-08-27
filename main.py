@@ -21,7 +21,7 @@ from app.pipeline import PMAnalyzePipeline, Settings
 from app.prompts import CATEGORIES
 from app.email_sender import EmailSender
 from app.digest import collect_digest, render_digest_html, PRESET_TITLE, render_reviews_markdown, upload_markdown_to_obs
-from app.search import search_quick, search_hybrid, llm_summary
+from app.search import search_quick, search_hybrid, llm_summary, search_kg_hybrid, llm_summary_kg
 from app.kg_runtime import KGRunManager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1371,3 +1371,55 @@ async def api_search_hybrid(body: HybridSearchIn):
             return {"ok": True, "q": q, "count": len(items), "items": items,
                     "summary": None, "summary_error": f"{type(e).__name__}: {e}"}
     return {"ok": True, "q": q, "count": len(items), "items": items, "summary": summary}
+
+
+class KgSearchIn(BaseModel):
+    q: str
+    limit: int = 30
+    max_ctx: int = 15
+    llm_summary: bool = False
+
+
+@app.post("/api/kg/search")
+async def api_kg_search(body: KgSearchIn):
+    """Гибридный поиск (BM25 + вектор, RRF) по узлам графа знаний (knowledge + wiki).
+
+    Всегда выполняет гибридный поиск по эмбеддингам графа, независимо от того,
+    есть ли локальные совпадения подсветки на фронте.
+    Найдено может быть больше, чем реально уходит в модель: контекст LLM
+    ограничен max_ctx (по умолчанию 15) первыми (лучшими по RRF) узлами.
+    """
+    q = (body.q or "").strip()
+    if not q:
+        return JSONResponse({"ok": False, "error": "empty query"}, status_code=400)
+
+    max_ctx = min(50, max(1, body.max_ctx))
+    limit = min(60, max(1, body.limit))
+
+    try:
+        items = await search_kg_hybrid(pool, q, limit)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"kg_search: {type(e).__name__}: {e}"}, status_code=500)
+
+    found = len(items)
+    ctx_items = items[:max_ctx]
+    used = len(ctx_items)
+
+    summary = None
+    summary_error = None
+    if body.llm_summary and ctx_items:
+        try:
+            summary = await llm_summary_kg(q, ctx_items)
+        except Exception as e:
+            summary_error = f"{type(e).__name__}: {e}"
+
+    return {
+        "ok": True,
+        "q": q,
+        "found": found,
+        "used": used,
+        "max_ctx": max_ctx,
+        "items": items,
+        "summary": summary,
+        "summary_error": summary_error,
+    }

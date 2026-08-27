@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone, date as _date
 import uuid
 
 from fastapi import FastAPI, BackgroundTasks, Request, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 
@@ -21,6 +22,7 @@ from app.prompts import CATEGORIES
 from app.email_sender import EmailSender
 from app.digest import collect_digest, render_digest_html, PRESET_TITLE, render_reviews_markdown, upload_markdown_to_obs
 from app.search import search_quick, search_hybrid, llm_summary
+from app.kg_runtime import KGRunManager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
@@ -57,13 +59,15 @@ pool: asyncpg.Pool | None = None
 mailer: EmailSender | None = None
 digest_task: asyncio.Task | None = None
 digest_stop: asyncio.Event = asyncio.Event()
+kg_manager: KGRunManager | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pipeline, pool, mailer, digest_task
+    global pipeline, pool, mailer, digest_task, kg_manager
     pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=5)
     pipeline = PMAnalyzePipeline(pool, Settings())
+    kg_manager = KGRunManager(pool, pipeline)
     mailer = EmailSender(SMTP_HOST, SMTP_PORT, SMTP_LOGIN, SMTP_PASSWORD)
 
     async with pool.acquire() as con:
@@ -224,6 +228,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PMAnalyze", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
 class _DropNoisyProgressEndpoint(logging.Filter):
@@ -731,6 +736,11 @@ class RunParserReq(BaseModel):
     include_sources: list[str] = []
 
 
+class KGStartReq(BaseModel):
+    limit: int = 0
+    batch_size: int = 1
+
+
 @app.post("/api/run/parser")
 async def run_parser(body: RunParserReq | None = None, background: BackgroundTasks = None, request: Request = None):
     """Полный цикл: сбор -> релевантность -> ревью (фоново)."""
@@ -902,6 +912,47 @@ async def run_kg_process(limit: int = 30):
     if not res.get("ok") and res.get("skipped") == "locked":
         return JSONResponse({"ok": False, "status": "busy", "reason": "kg_lock_busy"}, status_code=409)
     return res
+
+
+@app.get("/api/kg/run/status")
+async def kg_run_status():
+    if not kg_manager:
+        return JSONResponse({"ok": False, "error": "kg_manager_not_ready"}, status_code=503)
+    return await kg_manager.status()
+
+
+@app.post("/api/kg/run/start")
+async def kg_run_start(req: KGStartReq):
+    if not kg_manager:
+        return JSONResponse({"ok": False, "error": "kg_manager_not_ready"}, status_code=503)
+    res = await kg_manager.start(limit=req.limit, batch_size=req.batch_size)
+    if not res.get("ok") and res.get("status") == "busy":
+        return JSONResponse(res, status_code=409)
+    return res
+
+
+@app.post("/api/kg/run/stop")
+async def kg_run_stop():
+    if not kg_manager:
+        return JSONResponse({"ok": False, "error": "kg_manager_not_ready"}, status_code=503)
+    return await kg_manager.stop()
+
+
+@app.get("/api/graph")
+async def graph_data(limit_nodes: int = 450, limit_wiki: int = 120):
+    if not kg_manager:
+        return JSONResponse({"ok": False, "error": "kg_manager_not_ready"}, status_code=503)
+    return await kg_manager.graph_payload(limit_nodes=limit_nodes, limit_wiki=limit_wiki)
+
+
+@app.get("/api/graph/card")
+async def graph_card(node_id: str):
+    if not kg_manager:
+        return JSONResponse({"ok": False, "error": "kg_manager_not_ready"}, status_code=503)
+    d = await kg_manager.card_payload(node_id=node_id)
+    if not d.get("ok"):
+        return JSONResponse(d, status_code=404 if d.get("error")=="not_found" else 400)
+    return d
 
 
 # Разрешённые поля сортировки: alias -> SQL-выражение

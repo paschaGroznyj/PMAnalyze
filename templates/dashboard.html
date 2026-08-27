@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,900&family=Space+Mono:wght@400;700&family=Archivo:wght@400;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/vis-network@9.1.9/dist/vis-network.min.js"></script>
 <style>
   :root{
     --ink:#1E1A16; --paper:#FAF3E7; --orange:#FF5A1F;
@@ -303,6 +304,19 @@
   .sr-snip{font-size:12px; color:#4a443c; margin-top:6px; line-height:1.5}
   .search-empty{font-family:'Space Mono',monospace; font-size:12px; color:#9a8f82; padding:8px 0}
 
+  /* ===== KNOWLEDGE GRAPH PANEL ===== */
+  .kg-head{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap}
+  .kg-actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .kg-refresh{display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:2px solid var(--ink); border-radius:10px; background:#fff; cursor:pointer; transition:transform .15s ease, background .15s ease}
+  .kg-refresh:hover{background:#F7EFE8; transform:rotate(25deg)}
+  .kg-refresh:active{transform:scale(.96)}
+  .kg-refresh svg{width:18px; height:18px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
+  .kg-info{font-size:10px; color:#6b6055; letter-spacing:.04em}
+  .btn.danger{background:#fff; color:var(--ink); border-color:var(--ink)}
+  .btn.danger:hover{box-shadow:4px 4px 0 #e77a57}
+  #kg-canvas{height:520px; border:2px solid var(--ink); background:#fff}
+  #kg-panel{margin-top:20px; margin-bottom:14px}
+
 </style>
 </head>
 <body>
@@ -317,7 +331,10 @@
     <div class="actions">
       <button class="btn" id="btn-parser">⚙ запустить парсер</button>
       <button class="btn" id="btn-reviews">✎ запустить ревью</button>
+      <button class="btn" id="btn-kg-start">🕸 создание графа</button>
+      <button class="btn danger" id="btn-kg-stop" disabled>■ остановить граф</button>
       <button class="btn accent" id="btn-digest">✉ дайджест на почту</button>
+      <div class="mono" id="kg-run-info" style="font-size:10px;color:#c9beac">готов к запуску</div>
     </div>
     <div class="wx-widget" id="wx-widget">
       <div class="wx-sky" id="wx-sky"></div>
@@ -392,6 +409,23 @@
     <div class="search-hint mono" id="search-hint">Быстрый поиск по словам работает по мере ввода. Enter или лупа — гибридный поиск.</div>
     <div class="search-summary" id="search-summary" style="display:none"></div>
     <div class="search-results" id="search-results"></div>
+  </div>
+
+  <!-- ROW 2.5: KNOWLEDGE GRAPH (перемещён перед блоком статей) -->
+  <div class="panel" id="kg-panel">
+    <div class="kg-head">
+      <h3>Knowledge Graph</h3>
+      <div class="kg-actions">
+        <span class="mono kg-info" id="kg-graph-info">узлы: — · связи: —</span>
+        <button class="kg-refresh" id="btn-kg-refresh" title="Обновить граф" aria-label="Обновить граф">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+            <polyline points="21 3 21 9 15 9"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div id="kg-canvas"></div>
   </div>
 
   <!-- ROW 3: ARTICLES TABLE -->
@@ -1216,6 +1250,7 @@ async function openArticle(id){
 }
 $("#art-close").onclick = ()=> $("#art-modal").classList.remove("on");
 $("#art-modal").onclick = e=>{ if(e.target.id==="art-modal") $("#art-modal").classList.remove("on"); };
+window.openArticle = openArticle;
 
 
 /* ===== WEATHER WIDGET ===== */
@@ -1396,5 +1431,6 @@ loadArticles(1);
 setInterval(loadStats, 60000);
 setInterval(loadSearchStats, 60000);
 </script>
+<script src="/static/js/kg_panel.js"></script>
 </body>
 </html>

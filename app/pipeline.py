@@ -1095,7 +1095,7 @@ class PMAnalyzePipeline:
                     """
                     INSERT INTO process_mining.wiki_page_embeddings
                         (wiki_page_id, content, embedding, tsv, model, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4::vector, to_tsvector($6, $2), $5, now(), now())
+                    VALUES ($1, $2, $3::vector, to_tsvector($5, $2), $4, now(), now())
                     ON CONFLICT (wiki_page_id) DO UPDATE SET
                         content = EXCLUDED.content,
                         embedding = EXCLUDED.embedding,

@@ -127,6 +127,12 @@
   .flt-actions{display:flex; align-items:center; gap:10px; margin-top:16px; flex-wrap:wrap}
   .flt-hint{font-size:10px; color:#6b6055; letter-spacing:.06em}
   .filter{font-size:11px; letter-spacing:.1em; display:flex; align-items:center; gap:8px; cursor:pointer}
+  th.sortable{cursor:pointer; user-select:none; white-space:nowrap; transition:color .08s}
+  th.sortable:hover{color:var(--orange)}
+  th.sortable .sarr{display:inline-block; width:10px; margin-left:3px; font-family:'Space Mono',monospace;
+    font-size:10px; color:var(--orange); opacity:0}
+  th.sortable.active .sarr{opacity:1}
+  th.sortable.active{color:var(--orange)}
   .filter input{width:16px; height:16px; accent-color:var(--orange); cursor:pointer}
   #tbl-count{font-size:11px; color:#6b6055}
   .tbl-scroll{overflow-x:auto}
@@ -460,8 +466,13 @@
       <table id="art-table">
         <thead>
           <tr>
-            <th class="c">Q</th><th>Название</th><th>Категория</th><th class="c">Score</th>
-            <th class="c">Рел.</th><th class="c">Ревью</th><th class="c">Дата</th>
+            <th class="c sortable" data-sort="quarantine">Q<span class="sarr"></span></th>
+            <th class="sortable" data-sort="title">Название<span class="sarr"></span></th>
+            <th class="sortable" data-sort="category">Категория<span class="sarr"></span></th>
+            <th class="c sortable" data-sort="score">Score<span class="sarr"></span></th>
+            <th class="c sortable" data-sort="relevant">Рел.<span class="sarr"></span></th>
+            <th class="c sortable" data-sort="review">Ревью<span class="sarr"></span></th>
+            <th class="c sortable" data-sort="date">Дата<span class="sarr"></span></th>
           </tr>
         </thead>
         <tbody id="art-body"></tbody>
@@ -876,6 +887,7 @@ $("#digest-send").onclick = async e=>{
 
 // ---------------- ARTICLES TABLE ----------------
 let artPage = 1, artPages = 1, onlyRel = false;
+let artSort = "date", artOrder = "desc";
 
 function esc(s){ return (s||"").replace(/[&<>"]/g, c => (
   {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
@@ -939,8 +951,8 @@ function buildArticlesQuery(){
   putSel("relevant","f-relevant"); putSel("has_review","f-review"); putSel("quarantine","f-quar");
   put("score_min","f-smin"); put("score_max","f-smax");
   put("date_from","f-dfrom"); put("date_to","f-dto");
-  const sort=$("#f-sort")?.value; if(sort) p.set("sort", sort);
-  const order=$("#f-order")?.value; if(order) p.set("order", order);
+  p.set("sort", artSort);
+  p.set("order", artOrder);
   return p.toString();
 }
 
@@ -1053,13 +1065,20 @@ function refreshFilterHint(){
 
 $("#flt-toggle").onclick = ()=> $("#flt-panel").classList.toggle("on");
 
-$("#flt-apply").onclick = ()=>{ refreshFilterHint(); loadArticles(1); };
+$("#flt-apply").onclick = ()=>{
+  artSort = $("#f-sort")?.value || "date";
+  artOrder = $("#f-order")?.value || "desc";
+  syncSortUI();
+  refreshFilterHint(); loadArticles(1);
+};
 
 $("#flt-reset").onclick = ()=>{
   ["f-q","f-title","f-author","f-tag","f-smin","f-smax","f-dfrom","f-dto"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; });
   ["f-category","f-source"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; });
   ["f-relevant","f-review","f-quar"].forEach(id=>{ const el=$("#"+id); if(el) el.value="any"; });
+  artSort = "date"; artOrder = "desc";
   $("#f-sort").value="date"; $("#f-order").value="desc";
+  syncSortUI();
   refreshFilterHint(); loadArticles(1);
 };
 
@@ -1069,6 +1088,37 @@ $("#flt-reset").onclick = ()=>{
   if(el) el.addEventListener("keydown", ev=>{ if(ev.key==="Enter"){ refreshFilterHint(); loadArticles(1); } });
 });
 
+// ---------------- SORT BY TABLE HEADER ----------------
+// Синхронизирует подсветку th, стрелки ▲/▼ и селекты панели фильтров
+function syncSortUI(){
+  document.querySelectorAll("th.sortable").forEach(th=>{
+    const arr = th.querySelector(".sarr");
+    if(th.dataset.sort === artSort){
+      th.classList.add("active");
+      if(arr) arr.textContent = (artOrder === "asc" ? "▲" : "▼");
+    }else{
+      th.classList.remove("active");
+      if(arr) arr.textContent = "";
+    }
+  });
+  // держим панель фильтров в согласии с шапкой (если такая опция сортировки есть в селекте)
+  const sortSel = $("#f-sort");
+  if(sortSel && [...sortSel.options].some(o=>o.value===artSort)) sortSel.value = artSort;
+  const orderSel = $("#f-order");
+  if(orderSel) orderSel.value = artOrder;
+}
+
+document.querySelectorAll("th.sortable").forEach(th=>{
+  th.onclick = ()=>{
+    const key = th.dataset.sort;
+    if(artSort === key){ artOrder = (artOrder === "desc" ? "asc" : "desc"); }
+    else { artSort = key; artOrder = "desc"; }
+    syncSortUI();
+    loadArticles(1);
+  };
+});
+
+syncSortUI();
 loadFilterOptions();
 
 // ---------------- ARTICLE MODAL ----------------

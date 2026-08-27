@@ -142,7 +142,7 @@ class KGRunManager:
                 if step <= 0:
                     break
 
-                res = await self.pipeline.process_knowledge_graph(limit=step)
+                res = await self.pipeline.process_knowledge_graph(limit=step, stop_event=self._stop_event)
                 if not res.get("ok") and res.get("skipped") == "locked":
                     await asyncio.sleep(1.0)
                     continue

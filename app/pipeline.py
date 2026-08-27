@@ -1108,13 +1108,20 @@ class PMAnalyzePipeline:
         except Exception as e:
             print(f"[pmanalyze] wiki embedding upsert error wiki_page_id={wiki_page_id}: {type(e).__name__}: {e}")
 
-    async def process_knowledge_graph(self, limit: int = 30) -> dict:
+    async def process_knowledge_graph(self, limit: int = 30, stop_event: asyncio.Event | None = None) -> dict:
         """KG executor: релевантные статьи -> атомы -> связи -> wiki -> embeddings."""
         if not await self._try_lock():
             print("[pmanalyze] process_knowledge_graph lock busy, skip")
             return {"ok": False, "skipped": "locked"}
 
         processed = created_nodes = created_edges = created_pages = errors = 0
+        stop_requested = False
+
+        def _stop_now() -> bool:
+            try:
+                return bool(stop_event and stop_event.is_set())
+            except Exception:
+                return False
         try:
             async with self.pool.acquire() as con:
                 rows = await con.fetch(
@@ -1132,6 +1139,10 @@ class PMAnalyzePipeline:
             allowed_rel = set(RELATION_TYPES)
 
             for r in rows:
+                if _stop_now():
+                    stop_requested = True
+                    break
+
                 aid = int(r["id"])
                 art = await self._get_article(aid)
                 if not art:
@@ -1144,6 +1155,10 @@ class PMAnalyzePipeline:
                         if err:
                             await self._set_status(aid, "review_error", err)
                         continue
+
+                    if _stop_now():
+                        stop_requested = True
+                        break
 
                     source_meta = json.dumps({
                         "article_id": aid,
@@ -1161,8 +1176,15 @@ class PMAnalyzePipeline:
                     if not isinstance(atoms, list):
                         atoms = []
 
+                    if _stop_now():
+                        stop_requested = True
+                        break
+
                     inserted_nodes = []
                     for atom in atoms[:30]:
+                        if _stop_now():
+                            stop_requested = True
+                            break
                         if not isinstance(atom, dict):
                             continue
                         text_k = str(atom.get("text_knowledge") or "").strip()
@@ -1198,19 +1220,37 @@ class PMAnalyzePipeline:
                             "pipeline": "kg",
                         }
                         async with self.pool.acquire() as con:
-                            kid = await con.fetchval(
+                            existing_id = await con.fetchval(
                                 """
-                                INSERT INTO process_mining.knowledge
-                                    (text_knowledge, metadata_knowledge, importance, status, provenance, created_at, updated_at)
-                                VALUES ($1, $2::jsonb, $3, $4, 'kg-pipeline', now(), now())
-                                RETURNING id
+                                SELECT id
+                                FROM process_mining.knowledge
+                                WHERE text_knowledge = $1
+                                  AND metadata_knowledge ->> 'article_id' = $2
+                                ORDER BY id DESC
+                                LIMIT 1
                                 """,
-                                text_k, json.dumps(meta, ensure_ascii=False), imp, status,
+                                text_k,
+                                str(aid),
                             )
+                            if existing_id is not None:
+                                kid = int(existing_id)
+                            else:
+                                kid = await con.fetchval(
+                                    """
+                                    INSERT INTO process_mining.knowledge
+                                        (text_knowledge, metadata_knowledge, importance, status, provenance, created_at, updated_at)
+                                    VALUES ($1, $2::jsonb, $3, $4, 'kg-pipeline', now(), now())
+                                    RETURNING id
+                                    """,
+                                    text_k, json.dumps(meta, ensure_ascii=False), imp, status,
+                                )
+                                created_nodes += 1
                         kid = int(kid)
                         inserted_nodes.append({"id": kid, "text_knowledge": text_k})
-                        created_nodes += 1
                         await self._upsert_knowledge_embedding(kid, aid, text_k)
+
+                    if stop_requested:
+                        break
 
                     if inserted_nodes:
                         rel_prompt = build_relation_inference_prompt(json.dumps(inserted_nodes, ensure_ascii=False))
@@ -1253,6 +1293,10 @@ class PMAnalyzePipeline:
                                         sid, tid, rtype, rscore, rimp,
                                     )
                                 created_edges += 1
+
+                        if _stop_now():
+                            stop_requested = True
+                            break
 
                         topic = (art.get("title") or "").strip() or f"Article #{aid}"
                         wiki_prompt = build_wiki_synthesis_prompt(topic=topic, nodes_json=json.dumps(inserted_nodes, ensure_ascii=False))
@@ -1309,6 +1353,10 @@ class PMAnalyzePipeline:
                                     created_pages += 1
                                     await self._upsert_wiki_page_embedding(int(wid), content_md)
 
+                    if _stop_now():
+                        stop_requested = True
+                        break
+
                     async with self.pool.acquire() as con:
                         await con.execute(
                             """
@@ -1333,6 +1381,7 @@ class PMAnalyzePipeline:
                 "created_edges": created_edges,
                 "created_pages": created_pages,
                 "errors": errors,
+                "stop_requested": stop_requested,
             }
         finally:
             await self._unlock()

@@ -1108,6 +1108,79 @@ class PMAnalyzePipeline:
         except Exception as e:
             print(f"[pmanalyze] wiki embedding upsert error wiki_page_id={wiki_page_id}: {type(e).__name__}: {e}")
 
+    async def _hybrid_knowledge_candidates(
+        self,
+        query_text: str,
+        article_id: int,
+        exclude_ids: set[int] | None = None,
+        top_k: int = 6,
+        min_hybrid_score: float = 0.42,
+    ) -> list[dict]:
+        text = (query_text or "").strip()
+        if len(text) < 20:
+            return []
+
+        try:
+            emb = await embed_text(text[:30000])
+        except Exception as e:
+            print(f"[pmanalyze] candidate embed error article_id={article_id}: {type(e).__name__}: {e}")
+            return []
+
+        vec_lit = "[" + ",".join(f"{x:.7f}" for x in emb) + "]"
+        ex_ids = sorted(int(x) for x in (exclude_ids or set()) if int(x) > 0)
+        if not ex_ids:
+            ex_ids = [0]
+
+        q = text[:1200]
+        try:
+            async with self.pool.acquire() as con:
+                rows = await con.fetch(
+                    """
+                    SELECT
+                        ke.knowledge_id AS id,
+                        ke.content AS text_knowledge,
+                        GREATEST(0.0, 1 - (ke.embedding <=> $1::vector)) AS vec_sim,
+                        ts_rank_cd(ke.tsv, plainto_tsquery($2, $3)) AS lex_rank,
+                        (
+                            0.78 * GREATEST(0.0, 1 - (ke.embedding <=> $1::vector))
+                            +
+                            0.22 * LEAST(1.0, ts_rank_cd(ke.tsv, plainto_tsquery($2, $3)))
+                        ) AS hybrid_score
+                    FROM process_mining.knowledge_embeddings ke
+                    JOIN process_mining.knowledge k ON k.id = ke.knowledge_id
+                    WHERE ke.knowledge_id <> ALL($4::bigint[])
+                      AND COALESCE(k.metadata_knowledge ->> 'article_id', '') <> $5
+                    ORDER BY hybrid_score DESC
+                    LIMIT $6
+                    """,
+                    vec_lit,
+                    TS_CONFIG,
+                    q,
+                    ex_ids,
+                    str(article_id),
+                    max(1, int(top_k)),
+                )
+        except Exception as e:
+            print(f"[pmanalyze] hybrid candidate query error article_id={article_id}: {type(e).__name__}: {e}")
+            return []
+
+        out = []
+        for r in rows:
+            try:
+                score = float(r["hybrid_score"] or 0.0)
+            except Exception:
+                score = 0.0
+            if score < float(min_hybrid_score):
+                continue
+            out.append({
+                "id": int(r["id"]),
+                "text_knowledge": str(r["text_knowledge"] or "").strip(),
+                "hybrid_score": score,
+                "vec_sim": float(r["vec_sim"] or 0.0),
+                "lex_rank": float(r["lex_rank"] or 0.0),
+            })
+        return out
+
     async def process_knowledge_graph(self, limit: int = 30, stop_event: asyncio.Event | None = None) -> dict:
         """KG executor: релевантные статьи -> атомы -> связи -> wiki -> embeddings."""
         if not await self._try_lock():
@@ -1306,6 +1379,101 @@ class PMAnalyzePipeline:
                                             sid, tid, rtype, rscore, rimp,
                                         )
                                         created_edges += 1
+
+                        # Cross-article linking: гибридный retrieval (vector + FTS)
+                        # и LLM-инференс связей между новыми узлами и историческим графом.
+                        inserted_id_set = {int(n["id"]) for n in inserted_nodes}
+                        candidate_nodes: list[dict] = []
+                        candidate_seen: set[int] = set()
+                        for nn in inserted_nodes[:20]:
+                            if _stop_now():
+                                stop_requested = True
+                                break
+                            cands = await self._hybrid_knowledge_candidates(
+                                query_text=str(nn.get("text_knowledge") or ""),
+                                article_id=aid,
+                                exclude_ids=inserted_id_set.union(candidate_seen),
+                                top_k=6,
+                                min_hybrid_score=0.42,
+                            )
+                            for c in cands:
+                                cid = int(c.get("id"))
+                                if cid in inserted_id_set or cid in candidate_seen:
+                                    continue
+                                ctext = str(c.get("text_knowledge") or "").strip()
+                                if len(ctext) < 20:
+                                    continue
+                                candidate_seen.add(cid)
+                                candidate_nodes.append({"id": cid, "text_knowledge": ctext})
+                                if len(candidate_nodes) >= 40:
+                                    break
+                            if len(candidate_nodes) >= 40:
+                                break
+
+                        if candidate_nodes and not stop_requested:
+                            rel_nodes = inserted_nodes + candidate_nodes
+                            rel_cross_prompt = build_relation_inference_prompt(
+                                json.dumps(rel_nodes, ensure_ascii=False)
+                            )
+                            rel_cross_raw = await self._llm(self.settings.review_model, rel_cross_prompt, max_tokens=2200)
+                            rel_cross_data = self._extract_json(rel_cross_raw) or {}
+                            rel_cross = rel_cross_data.get("relations") if isinstance(rel_cross_data, dict) else []
+                            if isinstance(rel_cross, list):
+                                cand_id_set = {int(n["id"]) for n in candidate_nodes}
+                                for rr in rel_cross[:180]:
+                                    if not isinstance(rr, dict):
+                                        continue
+                                    try:
+                                        sid = int(rr.get("source_id"))
+                                        tid = int(rr.get("target_id"))
+                                    except Exception:
+                                        continue
+                                    if sid == tid:
+                                        continue
+                                    sid_is_new = sid in inserted_id_set
+                                    tid_is_new = tid in inserted_id_set
+                                    sid_is_old = sid in cand_id_set
+                                    tid_is_old = tid in cand_id_set
+                                    # Берём только cross-article связи new <-> old
+                                    if not ((sid_is_new and tid_is_old) or (sid_is_old and tid_is_new)):
+                                        continue
+                                    rtype = str(rr.get("relation_type") or "relates_to").strip()
+                                    if rtype not in allowed_rel:
+                                        continue
+                                    try:
+                                        rscore = float(rr.get("relevance_score", 0.5) or 0.5)
+                                    except Exception:
+                                        rscore = 0.5
+                                    try:
+                                        rimp = float(rr.get("importance", 0.5) or 0.5)
+                                    except Exception:
+                                        rimp = 0.5
+                                    rscore = max(0.0, min(1.0, rscore))
+                                    rimp = max(0.0, min(1.0, rimp))
+
+                                    async with self.pool.acquire() as con:
+                                        existing_rel = await con.fetchval(
+                                            """
+                                            SELECT id
+                                            FROM process_mining.entity_relations
+                                            WHERE source_id = $1
+                                              AND target_id = $2
+                                              AND relation_type = $3
+                                            ORDER BY id DESC
+                                            LIMIT 1
+                                            """,
+                                            sid, tid, rtype,
+                                        )
+                                        if existing_rel is None:
+                                            await con.execute(
+                                                """
+                                                INSERT INTO process_mining.entity_relations
+                                                    (source_id, target_id, relation_type, relevance_score, importance, provenance, created_at)
+                                                VALUES ($1,$2,$3,$4,$5,'kg-pipeline',now())
+                                                """,
+                                                sid, tid, rtype, rscore, rimp,
+                                            )
+                                            created_edges += 1
 
                         if _stop_now():
                             stop_requested = True

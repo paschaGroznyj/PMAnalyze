@@ -182,6 +182,76 @@
       .replace(/`(.+?)`/g, "<code>$1</code>");
   }
 
+  function wikiMdToHtml(md){
+    const raw = String(md || "").replace(/\r\n?/g, "\n");
+    if(!raw.trim()) return "";
+
+    const codeBlocks = [];
+    let text = raw.replace(/```([\s\S]*?)```/g, (_m, code)=>{
+      const i = codeBlocks.push(`<pre><code>${esc(String(code || "").trim())}</code></pre>`) - 1;
+      return `@@CODEBLOCK_${i}@@`;
+    });
+
+    const lines = text.split("\n");
+    let out = "";
+    let inList = false;
+
+    const flushList = ()=>{
+      if(inList){ out += "</ul>"; inList = false; }
+    };
+
+    const inline = (t)=>{
+      const e = esc(t || "");
+      return e
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*(.+?)\*/g, "<em>$1</em>")
+        .replace(/`(.+?)`/g, "<code>$1</code>")
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    };
+
+    for(const line of lines){
+      const t = line.trim();
+      if(!t){ flushList(); continue; }
+
+      if(/^@@CODEBLOCK_\d+@@$/.test(t)){
+        flushList();
+        out += t;
+        continue;
+      }
+
+      const hm = t.match(/^(#{1,6})\s+(.+)$/);
+      if(hm){
+        flushList();
+        const lvl = Math.min(6, hm[1].length);
+        out += `<h${lvl}>${inline(hm[2])}</h${lvl}>`;
+        continue;
+      }
+
+      const lm = t.match(/^[-*+]\s+(.+)$/);
+      if(lm){
+        if(!inList){ out += "<ul>"; inList = true; }
+        out += `<li>${inline(lm[1])}</li>`;
+        continue;
+      }
+
+      flushList();
+      out += `<p>${inline(t)}</p>`;
+    }
+    flushList();
+
+    out = out.replace(/@@CODEBLOCK_(\d+)@@/g, (_m, i)=> codeBlocks[Number(i)] || "");
+    return out;
+  }
+
+  function domainFromUrl(url){
+    try{
+      const h = new URL(String(url || "")).hostname || "";
+      return h.replace(/^www\./i, "");
+    }catch(_){
+      return "";
+    }
+  }
+
   function renderSummaryHtml(summary, items, meta){
     const md = String(summary || "");
     let html = mdToHtml(md);
@@ -283,7 +353,7 @@
       byId("kg-card-kind").textContent = d.kind === "wiki" ? "WIKI PAGE" : "KNOWLEDGE";
       byId("kg-card-title").textContent = d.title || "Без названия";
       byId("kg-card-meta").textContent = `ID: ${d.id} · status: ${d.status||"-"} · importance: ${Number(d.importance||0).toFixed(2)}`;
-      byId("kg-card-body").innerHTML = `<p>${mdToHtml(d.text||"")}</p>`;
+      byId("kg-card-body").innerHTML = (d.kind === "wiki") ? wikiMdToHtml(d.text||"") : `<p>${mdToHtml(d.text||"")}</p>`;
       const foot = byId("kg-card-foot");
       foot.innerHTML = "";
 
@@ -300,6 +370,17 @@
         a.rel = "noopener noreferrer";
         a.textContent = "открыть источник";
         foot.appendChild(a);
+
+        const host = domainFromUrl(sourceUrl);
+        if(host){
+          const hint = document.createElement("span");
+          hint.className = "mono";
+          hint.style.fontSize = "11px";
+          hint.style.opacity = "0.75";
+          hint.style.marginLeft = "8px";
+          hint.textContent = `(${host})`;
+          foot.appendChild(hint);
+        }
       }
 
       if(d.article_id && typeof window.openArticle === "function"){

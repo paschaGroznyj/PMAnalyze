@@ -1284,15 +1284,28 @@ class PMAnalyzePipeline:
                                 rimp = max(0.0, min(1.0, rimp))
 
                                 async with self.pool.acquire() as con:
-                                    await con.execute(
+                                    existing_rel = await con.fetchval(
                                         """
-                                        INSERT INTO process_mining.entity_relations
-                                            (source_id, target_id, relation_type, relevance_score, importance, provenance, created_at)
-                                        VALUES ($1,$2,$3,$4,$5,'kg-pipeline',now())
+                                        SELECT id
+                                        FROM process_mining.entity_relations
+                                        WHERE source_id = $1
+                                          AND target_id = $2
+                                          AND relation_type = $3
+                                        ORDER BY id DESC
+                                        LIMIT 1
                                         """,
-                                        sid, tid, rtype, rscore, rimp,
+                                        sid, tid, rtype,
                                     )
-                                created_edges += 1
+                                    if existing_rel is None:
+                                        await con.execute(
+                                            """
+                                            INSERT INTO process_mining.entity_relations
+                                                (source_id, target_id, relation_type, relevance_score, importance, provenance, created_at)
+                                            VALUES ($1,$2,$3,$4,$5,'kg-pipeline',now())
+                                            """,
+                                            sid, tid, rtype, rscore, rimp,
+                                        )
+                                        created_edges += 1
 
                         if _stop_now():
                             stop_requested = True
@@ -1334,23 +1347,65 @@ class PMAnalyzePipeline:
                                         )
                                 else:
                                     w_status = "active" if w_verdict == "pass" else "draft"
+                                    links_json = json.dumps([source_url] if source_url else [])
+                                    src_ids_json = json.dumps(src_ids)
                                     async with self.pool.acquire() as con:
-                                        wid = await con.fetchval(
+                                        existing_wid = await con.fetchval(
                                             """
-                                            INSERT INTO process_mining.wiki_pages
-                                                (title, content_md, source_ids, links, index_entry, status, importance, created_at, updated_at)
-                                            VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, now(), now())
-                                            RETURNING id
+                                            SELECT id
+                                            FROM process_mining.wiki_pages
+                                            WHERE title = $1
+                                              AND index_entry = $2
+                                              AND (
+                                                    ($3 <> '' AND links @> to_jsonb(ARRAY[$3]::text[]))
+                                                 OR ($3 = '' AND source_ids = $4::jsonb)
+                                              )
+                                            ORDER BY id DESC
+                                            LIMIT 1
                                             """,
                                             title,
-                                            content_md,
-                                            json.dumps(src_ids),
-                                            json.dumps([source_url] if source_url else []),
                                             index_entry,
-                                            w_status,
-                                            wimp,
+                                            source_url or "",
+                                            src_ids_json,
                                         )
-                                    created_pages += 1
+
+                                        if existing_wid is None:
+                                            wid = await con.fetchval(
+                                                """
+                                                INSERT INTO process_mining.wiki_pages
+                                                    (title, content_md, source_ids, links, index_entry, status, importance, created_at, updated_at)
+                                                VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, now(), now())
+                                                RETURNING id
+                                                """,
+                                                title,
+                                                content_md,
+                                                src_ids_json,
+                                                links_json,
+                                                index_entry,
+                                                w_status,
+                                                wimp,
+                                            )
+                                            created_pages += 1
+                                        else:
+                                            wid = int(existing_wid)
+                                            await con.execute(
+                                                """
+                                                UPDATE process_mining.wiki_pages
+                                                SET content_md = $2,
+                                                    source_ids = $3::jsonb,
+                                                    links = $4::jsonb,
+                                                    status = $5,
+                                                    importance = $6,
+                                                    updated_at = now()
+                                                WHERE id = $1
+                                                """,
+                                                wid,
+                                                content_md,
+                                                src_ids_json,
+                                                links_json,
+                                                w_status,
+                                                wimp,
+                                            )
                                     await self._upsert_wiki_page_embedding(int(wid), content_md)
 
                     if _stop_now():

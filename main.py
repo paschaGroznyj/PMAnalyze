@@ -151,6 +151,54 @@ async def lifespan(app: FastAPI):
             CREATE INDEX IF NOT EXISTS idx_ui_article_quarantine_updated_at
             ON process_mining.ui_article_quarantine(updated_at DESC)
         """)
+        await con.execute("""
+            ALTER TABLE process_mining.papers_metadata
+            ADD COLUMN IF NOT EXISTS kg_processed BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+        await con.execute("""
+            ALTER TABLE process_mining.papers_metadata
+            ADD COLUMN IF NOT EXISTS kg_processed_at TIMESTAMPTZ
+        """)
+
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.knowledge_embeddings (
+                knowledge_id INTEGER PRIMARY KEY
+                    REFERENCES process_mining.knowledge(id) ON DELETE CASCADE,
+                article_id BIGINT
+                    REFERENCES process_mining.papers_metadata(id) ON DELETE SET NULL,
+                content TEXT NOT NULL,
+                embedding VECTOR(4096),
+                tsv TSVECTOR,
+                model TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_knowledge_embeddings_article
+            ON process_mining.knowledge_embeddings(article_id)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_knowledge_embeddings_tsv
+            ON process_mining.knowledge_embeddings USING GIN(tsv)
+        """)
+
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.wiki_page_embeddings (
+                wiki_page_id INTEGER PRIMARY KEY
+                    REFERENCES process_mining.wiki_pages(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                embedding VECTOR(4096),
+                tsv TSVECTOR,
+                model TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_wiki_page_embeddings_tsv
+            ON process_mining.wiki_page_embeddings USING GIN(tsv)
+        """)
 
     await pipeline.start()
 
@@ -848,6 +896,14 @@ async def trigger_process(limit: int = 50):
     return {"ok": True, **res}
 
 
+@app.post("/api/kg/process")
+async def run_kg_process(limit: int = 30):
+    res = await pipeline.process_knowledge_graph(limit=limit)
+    if not res.get("ok") and res.get("skipped") == "locked":
+        return JSONResponse({"ok": False, "status": "busy", "reason": "kg_lock_busy"}, status_code=409)
+    return res
+
+
 # Разрешённые поля сортировки: alias -> SQL-выражение
 _ARTICLES_SORT_MAP = {
     "date": "p.date_sub",
@@ -859,6 +915,7 @@ _ARTICLES_SORT_MAP = {
     "review": "(r.article_id IS NOT NULL)",
     "quarantine": "COALESCE(q.active, FALSE)",
     "processed": "p.processed_at",
+    "kg": "p.kg_processed",
     "id": "p.id",
 }
 
@@ -878,6 +935,7 @@ async def list_articles(
     relevant: str | None = None,          # yes|no|any
     has_review: str | None = None,        # yes|no|any
     quarantine: str | None = None,        # yes|no|any
+    kg_processed: str | None = None,      # yes|no|any
     score_min: float | None = None,
     score_max: float | None = None,
     date_from: str | None = None,         # YYYY-MM-DD
@@ -926,6 +984,7 @@ async def list_articles(
     tri(relevant, "p.is_relevant = TRUE", "COALESCE(p.is_relevant, FALSE) = FALSE")
     tri(has_review, "r.article_id IS NOT NULL", "r.article_id IS NULL")
     tri(quarantine, "COALESCE(q.active, FALSE) = TRUE", "COALESCE(q.active, FALSE) = FALSE")
+    tri(kg_processed, "COALESCE(p.kg_processed, FALSE) = TRUE", "COALESCE(p.kg_processed, FALSE) = FALSE")
 
     if score_min is not None:
         add("p.relevance_score >= ${n}", float(score_min))
@@ -962,6 +1021,8 @@ async def list_articles(
                    p.category, p.relevance_score, p.is_relevant,
                    (r.article_id IS NOT NULL) AS has_review,
                    p.processed_at,
+                   COALESCE(p.kg_processed, FALSE) AS kg_processed,
+                   p.kg_processed_at,
                    CASE
                      WHEN p.source ILIKE 'yandex_disk:%' THEN COALESCE(p.pdf_url, p.url_article)
                      ELSE p.url_article

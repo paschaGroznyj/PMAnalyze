@@ -448,6 +448,13 @@
             <option value="no">не в карантине</option>
           </select>
         </label>
+        <label class="flt-f">В графе
+          <select id="f-kg">
+            <option value="any">— любой —</option>
+            <option value="yes">обработана</option>
+            <option value="no">не обработана</option>
+          </select>
+        </label>
         <label class="flt-f">Score от
           <span class="num-wrap">
             <input type="number" id="f-smin" step="0.05" min="0" max="1" placeholder="0.00">
@@ -489,6 +496,7 @@
           <col style="width:80px">
           <col style="width:72px">
           <col style="width:82px">
+          <col style="width:88px">
           <col style="width:110px">
         </colgroup>
         <thead>
@@ -499,6 +507,7 @@
             <th class="c sortable" data-sort="score">Score<span class="sarr"></span></th>
             <th class="c sortable" data-sort="relevant">Рел.<span class="sarr"></span></th>
             <th class="c sortable" data-sort="review">Ревью<span class="sarr"></span></th>
+            <th class="c sortable" data-sort="kg">Граф<span class="sarr"></span></th>
             <th class="c sortable" data-sort="date">Дата<span class="sarr"></span></th>
           </tr>
         </thead>
@@ -975,7 +984,7 @@ function buildArticlesQuery(){
   const putSel = (key, id)=>{ const v=$("#"+id)?.value; if(v && v!=="any" && v!=="") p.set(key, v); };
   put("q","f-q"); put("title","f-title"); put("author","f-author"); put("tag","f-tag");
   putSel("category","f-category"); putSel("source","f-source");
-  putSel("relevant","f-relevant"); putSel("has_review","f-review"); putSel("quarantine","f-quar");
+  putSel("relevant","f-relevant"); putSel("has_review","f-review"); putSel("quarantine","f-quar"); putSel("kg_processed","f-kg");
   put("score_min","f-smin"); put("score_max","f-smax");
   put("date_from","f-dfrom"); put("date_to","f-dto");
   p.set("sort", artSort);
@@ -985,7 +994,7 @@ function buildArticlesQuery(){
 
 function countActiveFilters(){
   const ids=["f-q","f-title","f-author","f-tag","f-smin","f-smax","f-dfrom","f-dto"];
-  const sels=["f-category","f-source","f-relevant","f-review","f-quar"];
+  const sels=["f-category","f-source","f-relevant","f-review","f-quar","f-kg"];
   let n=0;
   ids.forEach(id=>{ if(($("#"+id)?.value||"").trim()) n++; });
   sels.forEach(id=>{ const v=$("#"+id)?.value; if(v && v!=="any" && v!=="") n++; });
@@ -1002,7 +1011,7 @@ async function loadArticles(page){
     $("#tbl-count").textContent = `${d.total} статей · стр. ${d.page}/${d.pages}`;
     const body = $("#art-body"); body.innerHTML = "";
     if(!d.articles.length){
-      body.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:#6b6055">Нет статей</td></tr>`;
+      body.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:24px;color:#6b6055">Нет статей</td></tr>`;
     }
     d.articles.forEach(a=>{
       const score = a.relevance_score!=null ? Number(a.relevance_score).toFixed(2) : "—";
@@ -1012,6 +1021,9 @@ async function loadArticles(page){
       const rev = a.has_review
         ? '<span class="badge rev">есть</span>'
         : '<span class="badge norev">нет</span>';
+      const kg = a.kg_processed
+        ? '<span class="badge yes">да</span>'
+        : '<span class="badge no">нет</span>';
       const qOn = !!a.quarantine_active;
       const tr = document.createElement("tr");
       if(qOn) tr.classList.add("quarantined");
@@ -1022,6 +1034,7 @@ async function loadArticles(page){
          <td class="c">${score}</td>
          <td class="c">${rel}</td>
          <td class="c">${rev}</td>
+         <td class="c">${kg}</td>
          <td class="c">${fmtDate(a.date_sub)}</td>`;
       tr.onclick = (ev)=>{
         if(ev.target && ev.target.closest('.q-box')) return;
@@ -1116,7 +1129,7 @@ $("#flt-apply").onclick = ()=>{
 $("#flt-reset").onclick = ()=>{
   ["f-q","f-title","f-author","f-tag","f-smin","f-smax","f-dfrom","f-dto"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; });
   ["f-category","f-source"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; });
-  ["f-relevant","f-review","f-quar"].forEach(id=>{ const el=$("#"+id); if(el) el.value="any"; });
+  ["f-relevant","f-review","f-quar","f-kg"].forEach(id=>{ const el=$("#"+id); if(el) el.value="any"; });
   artSort = "date"; artOrder = "desc";
   syncSortUI();
   refreshFilterHint(); loadArticles(1);

@@ -52,6 +52,13 @@ def _to_date(value):
         return None
 
 from app.prompts import build_relevance_prompt, build_review_prompt, build_annotation_translation_prompt, CATEGORIES
+from app.kg_prompts import (
+    build_knowledge_extraction_prompt,
+    build_relation_inference_prompt,
+    build_wiki_synthesis_prompt,
+    build_knowledge_lint_prompt,
+    RELATION_TYPES,
+)
 
 
 @dataclass
@@ -982,6 +989,353 @@ class PMAnalyzePipeline:
                 await self._set_status(aid, "review_error", str(e)[:300])
                 await self._reviews_progress_tick(done_inc=1, err_inc=1)
         return {"reviewed": reviewed, "errors": errors, "skipped": skipped, "total": len(rows)}
+
+    async def _fetch_article_text_for_kg(self, art: dict) -> tuple[str, str, str | None]:
+        """Возвращает (text, source_url, error_code). Для KG берём ~первые 4 страницы."""
+        url_article = (art.get("url_article") or "").strip()
+        pdf_url = (art.get("pdf_url") or "").strip()
+        source = (art.get("source") or "").strip().lower()
+
+        source_url = pdf_url or url_article
+        original_source_url = source_url
+        page_text = ""
+
+        if source.startswith("yandex_disk:"):
+            page_text = await self._download_pdf_text(pdf_url)
+            if not page_text:
+                page_text = await self._fetch_page_text(pdf_url or source_url)
+                if self._looks_like_yandex_listing(page_text):
+                    page_text = ""
+            if not page_text:
+                page_text = await self._fetch_page_text(source_url)
+                if self._looks_like_yandex_listing(page_text):
+                    page_text = ""
+        else:
+            candidate_urls = []
+            if "ieeexplore.ieee.org" in source:
+                candidate_urls = self._ieee_candidate_urls(url_article, pdf_url)
+            else:
+                for u in [url_article, source_url, pdf_url]:
+                    if u and u not in candidate_urls:
+                        candidate_urls.append(u)
+
+            for u in candidate_urls:
+                page_text = await self._fetch_page_text(u)
+                if page_text and not self._looks_like_yandex_listing(page_text):
+                    source_url = u
+                    break
+                page_text = ""
+
+            if not page_text:
+                page_text, parser_used_url, _parser_method = await self._fetch_pdf_text_via_parser(
+                    [pdf_url, source_url], max_pages=4, max_chars=18000
+                )
+                if page_text and parser_used_url:
+                    source_url = parser_used_url
+
+                if not page_text and "ieeexplore.ieee.org" in source:
+                    ar = self._extract_ieee_arnumber(url_article, pdf_url)
+                    if ar:
+                        page_text = await self._download_pdf_text(
+                            f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={ar}"
+                        )
+                        if page_text:
+                            source_url = f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={ar}"
+                if not page_text:
+                    page_text = await self._download_pdf_text(pdf_url)
+
+        text = (page_text or "").strip()
+        if text:
+            text = text[:18000]
+            if source_url and original_source_url and source_url != original_source_url:
+                await self._mark_invalid_source_url(int(art.get("id")), original_source_url)
+            return text, source_url, None
+
+        abstract_text = (art.get("abstract") or "").strip()
+        if abstract_text:
+            return abstract_text[:8000], (source_url or pdf_url or url_article or "").strip(), None
+
+        return "", source_url, "content_unavailable_or_invalid_source_url"
+
+    async def _upsert_knowledge_embedding(self, knowledge_id: int, article_id: int, text_knowledge: str):
+        text = (text_knowledge or "").strip()
+        if not text:
+            return
+        try:
+            emb = await embed_text(text[:30000])
+            vec_lit = "[" + ",".join(f"{x:.7f}" for x in emb) + "]"
+            async with self.pool.acquire() as con:
+                await con.execute(
+                    """
+                    INSERT INTO process_mining.knowledge_embeddings
+                        (knowledge_id, article_id, content, embedding, tsv, model, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4::vector, to_tsvector($6, $3), $5, now(), now())
+                    ON CONFLICT (knowledge_id) DO UPDATE SET
+                        article_id = EXCLUDED.article_id,
+                        content = EXCLUDED.content,
+                        embedding = EXCLUDED.embedding,
+                        tsv = EXCLUDED.tsv,
+                        model = EXCLUDED.model,
+                        updated_at = now()
+                    """,
+                    knowledge_id, article_id, text, vec_lit, EMBED_MODEL, TS_CONFIG,
+                )
+        except Exception as e:
+            print(f"[pmanalyze] knowledge embedding upsert error knowledge_id={knowledge_id}: {type(e).__name__}: {e}")
+
+    async def _upsert_wiki_page_embedding(self, wiki_page_id: int, content_md: str):
+        text = (content_md or "").strip()
+        if not text:
+            return
+        try:
+            emb = await embed_text(text[:30000])
+            vec_lit = "[" + ",".join(f"{x:.7f}" for x in emb) + "]"
+            async with self.pool.acquire() as con:
+                await con.execute(
+                    """
+                    INSERT INTO process_mining.wiki_page_embeddings
+                        (wiki_page_id, content, embedding, tsv, model, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4::vector, to_tsvector($6, $2), $5, now(), now())
+                    ON CONFLICT (wiki_page_id) DO UPDATE SET
+                        content = EXCLUDED.content,
+                        embedding = EXCLUDED.embedding,
+                        tsv = EXCLUDED.tsv,
+                        model = EXCLUDED.model,
+                        updated_at = now()
+                    """,
+                    wiki_page_id, text, vec_lit, EMBED_MODEL, TS_CONFIG,
+                )
+        except Exception as e:
+            print(f"[pmanalyze] wiki embedding upsert error wiki_page_id={wiki_page_id}: {type(e).__name__}: {e}")
+
+    async def process_knowledge_graph(self, limit: int = 30) -> dict:
+        """KG executor: релевантные статьи -> атомы -> связи -> wiki -> embeddings."""
+        if not await self._try_lock():
+            print("[pmanalyze] process_knowledge_graph lock busy, skip")
+            return {"ok": False, "skipped": "locked"}
+
+        processed = created_nodes = created_edges = created_pages = errors = 0
+        try:
+            async with self.pool.acquire() as con:
+                rows = await con.fetch(
+                    """
+                    SELECT p.id
+                    FROM process_mining.papers_metadata p
+                    WHERE p.is_relevant = TRUE
+                      AND COALESCE(p.kg_processed, FALSE) = FALSE
+                    ORDER BY p.created_at ASC, p.id ASC
+                    LIMIT $1
+                    """,
+                    max(1, int(limit)),
+                )
+
+            allowed_rel = set(RELATION_TYPES)
+
+            for r in rows:
+                aid = int(r["id"])
+                art = await self._get_article(aid)
+                if not art:
+                    errors += 1
+                    continue
+                try:
+                    source_text, source_url, err = await self._fetch_article_text_for_kg(art)
+                    if not source_text:
+                        errors += 1
+                        if err:
+                            await self._set_status(aid, "review_error", err)
+                        continue
+
+                    source_meta = json.dumps({
+                        "article_id": aid,
+                        "title": art.get("title") or "",
+                        "source": art.get("source") or "",
+                        "source_url": source_url or art.get("url_article") or art.get("pdf_url") or "",
+                        "authors": self._normalize_authors(art.get("authors")),
+                        "date_sub": str(art.get("date_sub") or ""),
+                    }, ensure_ascii=False)
+
+                    ex_prompt = build_knowledge_extraction_prompt(source_text=source_text, source_meta=source_meta)
+                    ex_raw = await self._llm(self.settings.review_model, ex_prompt, max_tokens=2200)
+                    ex_data = self._extract_json(ex_raw) or {}
+                    atoms = ex_data.get("atoms") if isinstance(ex_data, dict) else []
+                    if not isinstance(atoms, list):
+                        atoms = []
+
+                    inserted_nodes = []
+                    for atom in atoms[:30]:
+                        if not isinstance(atom, dict):
+                            continue
+                        text_k = str(atom.get("text_knowledge") or "").strip()
+                        if len(text_k) < 20:
+                            continue
+                        try:
+                            imp = float(atom.get("importance", 0.5) or 0.5)
+                        except Exception:
+                            imp = 0.5
+                        imp = max(0.0, min(1.0, imp))
+                        tags = atom.get("tags") if isinstance(atom.get("tags"), list) else []
+
+                        lint_prompt = build_knowledge_lint_prompt("knowledge", json.dumps(atom, ensure_ascii=False))
+                        lint_raw = await self._llm(self.settings.review_model, lint_prompt, max_tokens=700)
+                        lint = self._extract_json(lint_raw) or {}
+                        verdict = str(lint.get("verdict") or "pass").lower()
+                        reason = str(lint.get("reason") or "").strip()[:2000]
+
+                        if verdict == "fail":
+                            async with self.pool.acquire() as con:
+                                await con.execute(
+                                    "INSERT INTO process_mining.knowledge_review (knowledge_id, reason, status) VALUES (NULL, $1, 'pending')",
+                                    f"KG lint fail article_id={aid}: {reason or text_k[:240]}",
+                                )
+                            continue
+
+                        status = "active" if verdict == "pass" else "review"
+                        meta = {
+                            "source": source_url or art.get("url_article") or art.get("pdf_url") or "",
+                            "article_id": aid,
+                            "article_title": art.get("title") or "",
+                            "tags": tags,
+                            "pipeline": "kg",
+                        }
+                        async with self.pool.acquire() as con:
+                            kid = await con.fetchval(
+                                """
+                                INSERT INTO process_mining.knowledge
+                                    (text_knowledge, metadata_knowledge, importance, status, provenance, created_at, updated_at)
+                                VALUES ($1, $2::jsonb, $3, $4, 'kg-pipeline', now(), now())
+                                RETURNING id
+                                """,
+                                text_k, json.dumps(meta, ensure_ascii=False), imp, status,
+                            )
+                        kid = int(kid)
+                        inserted_nodes.append({"id": kid, "text_knowledge": text_k})
+                        created_nodes += 1
+                        await self._upsert_knowledge_embedding(kid, aid, text_k)
+
+                    if inserted_nodes:
+                        rel_prompt = build_relation_inference_prompt(json.dumps(inserted_nodes, ensure_ascii=False))
+                        rel_raw = await self._llm(self.settings.review_model, rel_prompt, max_tokens=1800)
+                        rel_data = self._extract_json(rel_raw) or {}
+                        rels = rel_data.get("relations") if isinstance(rel_data, dict) else []
+                        if isinstance(rels, list):
+                            id_set = {int(n["id"]) for n in inserted_nodes}
+                            for rr in rels[:120]:
+                                if not isinstance(rr, dict):
+                                    continue
+                                try:
+                                    sid = int(rr.get("source_id"))
+                                    tid = int(rr.get("target_id"))
+                                except Exception:
+                                    continue
+                                if sid == tid or sid not in id_set or tid not in id_set:
+                                    continue
+                                rtype = str(rr.get("relation_type") or "relates_to").strip()
+                                if rtype not in allowed_rel:
+                                    continue
+                                try:
+                                    rscore = float(rr.get("relevance_score", 0.5) or 0.5)
+                                except Exception:
+                                    rscore = 0.5
+                                try:
+                                    rimp = float(rr.get("importance", 0.5) or 0.5)
+                                except Exception:
+                                    rimp = 0.5
+                                rscore = max(0.0, min(1.0, rscore))
+                                rimp = max(0.0, min(1.0, rimp))
+
+                                async with self.pool.acquire() as con:
+                                    await con.execute(
+                                        """
+                                        INSERT INTO process_mining.entity_relations
+                                            (source_id, target_id, relation_type, relevance_score, importance, provenance, created_at)
+                                        VALUES ($1,$2,$3,$4,$5,'kg-pipeline',now())
+                                        """,
+                                        sid, tid, rtype, rscore, rimp,
+                                    )
+                                created_edges += 1
+
+                        topic = (art.get("title") or "").strip() or f"Article #{aid}"
+                        wiki_prompt = build_wiki_synthesis_prompt(topic=topic, nodes_json=json.dumps(inserted_nodes, ensure_ascii=False))
+                        wiki_raw = await self._llm(self.settings.review_model, wiki_prompt, max_tokens=2600)
+                        wiki_data = self._extract_json(wiki_raw) or {}
+                        if isinstance(wiki_data, dict):
+                            title = str(wiki_data.get("title") or topic).strip()[:500]
+                            content_md = str(wiki_data.get("content_md") or "").strip()
+                            src_ids = wiki_data.get("source_ids") if isinstance(wiki_data.get("source_ids"), list) else [n["id"] for n in inserted_nodes]
+                            src_ids = [int(x) for x in src_ids if str(x).isdigit()]
+                            index_entry = str(wiki_data.get("index_entry") or title)[:300]
+                            try:
+                                wimp = float(wiki_data.get("importance", 0.6) or 0.6)
+                            except Exception:
+                                wimp = 0.6
+                            wimp = max(0.0, min(1.0, wimp))
+
+                            if content_md:
+                                lint_w_prompt = build_knowledge_lint_prompt("wiki_page", json.dumps({
+                                    "title": title,
+                                    "content_md": content_md,
+                                    "source_ids": src_ids,
+                                    "index_entry": index_entry,
+                                }, ensure_ascii=False))
+                                lint_w_raw = await self._llm(self.settings.review_model, lint_w_prompt, max_tokens=700)
+                                lint_w = self._extract_json(lint_w_raw) or {}
+                                w_verdict = str(lint_w.get("verdict") or "pass").lower()
+                                w_reason = str(lint_w.get("reason") or "").strip()[:2000]
+
+                                if w_verdict == "fail":
+                                    async with self.pool.acquire() as con:
+                                        await con.execute(
+                                            "INSERT INTO process_mining.knowledge_review (knowledge_id, reason, status) VALUES (NULL, $1, 'pending')",
+                                            f"KG wiki lint fail article_id={aid}: {w_reason or title}",
+                                        )
+                                else:
+                                    w_status = "active" if w_verdict == "pass" else "draft"
+                                    async with self.pool.acquire() as con:
+                                        wid = await con.fetchval(
+                                            """
+                                            INSERT INTO process_mining.wiki_pages
+                                                (title, content_md, source_ids, links, index_entry, status, importance, created_at, updated_at)
+                                            VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, now(), now())
+                                            RETURNING id
+                                            """,
+                                            title,
+                                            content_md,
+                                            json.dumps(src_ids),
+                                            json.dumps([source_url] if source_url else []),
+                                            index_entry,
+                                            w_status,
+                                            wimp,
+                                        )
+                                    created_pages += 1
+                                    await self._upsert_wiki_page_embedding(int(wid), content_md)
+
+                    async with self.pool.acquire() as con:
+                        await con.execute(
+                            """
+                            UPDATE process_mining.papers_metadata
+                            SET kg_processed = TRUE,
+                                kg_processed_at = now(),
+                                updated_at = now()
+                            WHERE id = $1
+                            """,
+                            aid,
+                        )
+                    processed += 1
+                except Exception as e:
+                    errors += 1
+                    print(f"[pmanalyze] process_knowledge_graph article_id={aid} error: {type(e).__name__}: {e}")
+
+            return {
+                "ok": True,
+                "total": len(rows),
+                "processed": processed,
+                "created_nodes": created_nodes,
+                "created_edges": created_edges,
+                "created_pages": created_pages,
+                "errors": errors,
+            }
+        finally:
+            await self._unlock()
 
     # ---------------- db helpers ----------------
     async def _get_article(self, aid: int) -> dict | None:

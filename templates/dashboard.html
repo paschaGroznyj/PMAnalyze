@@ -228,6 +228,7 @@
     .kg-head{flex-direction:column; align-items:center; text-align:center; gap:8px}
     .kg-actions{width:100%; justify-content:center}
     .kg-info{display:block; text-align:center}
+    .kg-inp-wrap{min-width:0}
   }
   @media(max-width:500px){
     body{padding:12px}
@@ -241,6 +242,10 @@
     .kg-refresh{width:36px; height:36px}
     .btn.kg-toggle{min-height:44px; width:100%; justify-content:center; text-align:center}
     .btn.kg-toggle.running{padding-left:44px; padding-right:44px}
+    .kg-search-row{gap:10px}
+    .kg-search-go{width:36px; height:36px}
+    #kg-depth{width:100%}
+    .kg-depth-row{align-items:center}
   }
 
   /* ===== WEATHER WIDGET ===== */
@@ -320,6 +325,27 @@
   .kg-refresh:active{transform:scale(.96)}
   .kg-refresh svg{width:18px; height:18px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
   .kg-info{font-size:10px; color:#6b6055; letter-spacing:.04em}
+
+  .kg-search{border:2px solid var(--ink); background:rgba(30,26,22,.03); padding:12px; margin-bottom:12px}
+  .kg-search-row{display:flex; align-items:center; gap:12px; flex-wrap:wrap}
+  .kg-inp-wrap{position:relative; flex:1; min-width:260px}
+  #kg-search-q{width:100%; box-sizing:border-box; border:2px solid var(--ink); background:#fff;
+    padding:11px 46px 11px 12px; font-family:'Space Mono',monospace; font-size:13px; color:var(--ink)}
+  #kg-search-q:focus{outline:none; box-shadow:3px 3px 0 var(--orange)}
+  .kg-search-go{position:absolute; right:6px; top:50%; transform:translateY(-50%);
+    border:2px solid var(--ink); background:var(--yellow); cursor:pointer; width:34px; height:34px; padding:0}
+  .kg-search-go:hover{background:var(--orange)}
+  .kg-search-go svg{width:18px; height:18px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round}
+  .kg-depth-row{display:flex; align-items:center; gap:10px; margin-top:10px}
+  .kg-depth-label{font-size:10px; color:#6b6055; letter-spacing:.06em; text-transform:uppercase}
+  .kg-depth-val{font-size:12px; min-width:18px; text-align:center}
+  #kg-depth{-webkit-appearance:none; appearance:none; width:190px; height:3px; background:#1E1A16; outline:none}
+  #kg-depth::-webkit-slider-thumb{-webkit-appearance:none; appearance:none; width:16px; height:16px; border-radius:50%; background:#FF5A1F; border:2px solid #1E1A16; cursor:pointer}
+  #kg-depth::-moz-range-track{height:3px; background:#1E1A16; border:none}
+  #kg-depth::-moz-range-thumb{width:16px; height:16px; border-radius:50%; background:#FF5A1F; border:2px solid #1E1A16; cursor:pointer}
+  .kg-search-hint{margin-top:8px; font-size:10px; color:#9a8f82; letter-spacing:.04em}
+  .kg-search-summary{margin-top:10px; background:#fff; border:2px dashed var(--ink); padding:9px 10px; font-size:12px; color:#4a443c}
+
   .btn.danger{background:#fff; color:var(--ink); border-color:var(--ink)}
   .btn.danger:hover{box-shadow:4px 4px 0 #e77a57}
   .btn.kg-toggle{display:inline-flex; align-items:center; justify-content:center; text-align:center; gap:8px; position:relative; padding-left:16px; padding-right:16px}
@@ -436,8 +462,37 @@
             <polyline points="21 3 21 9 15 9"/>
           </svg>
         </button>
+        <button class="fbtn mono" id="btn-kg-search-toggle" title="Показать поиск по графу">Поиск по графу ▾</button>
       </div>
     </div>
+
+    <div class="kg-search" id="kg-search-box" style="display:none">
+      <div class="kg-search-row">
+        <div class="kg-inp-wrap">
+          <input type="text" id="kg-search-q" maxlength="500" autocomplete="off" placeholder="поиск по узлам knowledge/wiki в реальном времени">
+          <button class="kg-search-go" id="kg-search-go" title="Применить глубину связей" aria-label="Применить глубину связей">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle>
+              <line x1="20" y1="20" x2="16.6" y2="16.6"></line>
+            </svg>
+          </button>
+        </div>
+        <label class="filter mono search-llm">
+          <input type="checkbox" id="kg-search-ctx"> в контекст LLM
+        </label>
+        <label class="filter mono search-llm">
+          <input type="checkbox" id="kg-search-llm"> LLM-summary
+        </label>
+      </div>
+      <div class="kg-depth-row">
+        <span class="mono kg-depth-label">глубина связей</span>
+        <input type="range" id="kg-depth" min="1" max="5" step="1" value="2">
+        <span class="mono kg-depth-val" id="kg-depth-val">2</span>
+      </div>
+      <div class="kg-search-hint mono" id="kg-search-hint">Подсветка работает при вводе. Глубина применяется по кнопке лупы.</div>
+      <div class="kg-search-summary" id="kg-search-summary" style="display:none"></div>
+    </div>
+
     <div id="kg-canvas"></div>
   </div>
 
@@ -1390,10 +1445,17 @@ async function runHybrid(){
   sSum.style.display="none"; sSum.innerHTML="";
   sRes.innerHTML = `<div class="search-empty">Ищу…</div>`;
   const wantLlm = sLlm.checked;
+
+  const kgCtxEnabled = document.getElementById("kg-search-ctx")?.checked;
+  const kgCtxRaw = (window.__kg_graph_context || "").trim();
+  const qWithCtx = (kgCtxEnabled && kgCtxRaw)
+    ? `${q}\n\nКонтекст из knowledge graph:\n${kgCtxRaw}`
+    : q;
+
   try{
     const r = await fetch("/api/search/hybrid", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({q, limit:10, llm_summary: wantLlm})
+      body: JSON.stringify({q: qWithCtx, limit:10, llm_summary: wantLlm})
     });
     const d = await r.json();
     if(!d.ok){ sRes.innerHTML=`<div class="search-empty">Ошибка: ${esc(d.error||"unknown")}</div>`; return; }

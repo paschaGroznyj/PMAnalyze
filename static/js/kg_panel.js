@@ -8,6 +8,17 @@
   const graphInfo = byId("kg-graph-info");
   const graphEl = byId("kg-canvas");
 
+  const btnSearchToggle = byId("btn-kg-search-toggle");
+  const searchBox = byId("kg-search-box");
+  const searchQ = byId("kg-search-q");
+  const searchGo = byId("kg-search-go");
+  const searchCtx = byId("kg-search-ctx");
+  const searchLlm = byId("kg-search-llm");
+  const depthEl = byId("kg-depth");
+  const depthVal = byId("kg-depth-val");
+  const searchHint = byId("kg-search-hint");
+  const searchSummary = byId("kg-search-summary");
+
   if(!btnStart || !graphEl) return;
 
   let network = null;
@@ -18,6 +29,15 @@
   let pollTimer = null;
   let graphTimer = null;
   let lastRunning = null;
+
+  let nodeRawMap = new Map(); // id -> raw node payload
+  let edgeRawMap = new Map(); // id -> raw edge payload
+  let adjacency = new Map();  // id -> Set(neighbor ids)
+  let baseLabels = new Map(); // id -> original vis label
+  let baseKind = new Map();   // id -> knowledge/wiki
+
+  let lastMatches = [];
+  let lastSelection = new Set();
 
   function esc(s){
     return String(s||"").replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
@@ -138,7 +158,7 @@
       color: isWiki
         ? {background: "#E3D5F5", border: "#1E1A16"}
         : {background: "#CDE8D5", border: "#1E1A16"},
-      font: {face: "Space Mono", size: 11},
+      font: {face: "Space Mono", size: 11, color: "#1E1A16"},
     };
   }
 
@@ -152,12 +172,247 @@
       color: {color: e.kind === "wiki_link" ? "#7b6f8f" : "#FF5A1F"},
       font: {align: "middle", size: 9, color: "#3a342d"},
       smooth: {type: "dynamic"},
+      width: 1.2,
     };
   }
 
   function updateGraphInfo(payload){
     if(graphInfo && payload.counts){
       graphInfo.textContent = `узлы knowledge: ${payload.counts.knowledge} · wiki: ${payload.counts.wiki_pages} · связей: ${payload.counts.relations}`;
+    }
+  }
+
+  function rebuildAdjacency(){
+    adjacency = new Map();
+    for(const id of knownNodeIds) adjacency.set(id, new Set());
+    const edges = edgesDS ? edgesDS.get() : [];
+    for(const e of edges){
+      if(!adjacency.has(e.from)) adjacency.set(e.from, new Set());
+      if(!adjacency.has(e.to)) adjacency.set(e.to, new Set());
+      adjacency.get(e.from).add(e.to);
+      adjacency.get(e.to).add(e.from);
+    }
+  }
+
+  function resetVisual(){
+    if(!nodesDS || !edgesDS) return;
+    const nUpd = [];
+    for(const n of nodesDS.get()){
+      const kind = baseKind.get(n.id) || "knowledge";
+      const isWiki = kind === "wiki";
+      nUpd.push({
+        id: n.id,
+        label: baseLabels.get(n.id) || n.label,
+        hidden: false,
+        opacity: 1,
+        color: isWiki ? {background:"#E3D5F5", border:"#1E1A16"} : {background:"#CDE8D5", border:"#1E1A16"},
+        font: {color:"#1E1A16", size: 11, face:"Space Mono"},
+      });
+    }
+    const eUpd = edgesDS.get().map(e=>({
+      id: e.id,
+      hidden: false,
+      color: {color: (edgeRawMap.get(e.id)?.kind === "wiki_link" ? "#7b6f8f" : "#FF5A1F")},
+      width: 1.2,
+    }));
+    nodesDS.update(nUpd);
+    edgesDS.update(eUpd);
+  }
+
+  function findMatches(q){
+    const text = String(q||"").trim().toLowerCase();
+    if(text.length < 2) return [];
+    const toks = text.split(/\s+/).filter(Boolean);
+    const out = [];
+    for(const [id, raw] of nodeRawMap.entries()){
+      const hay = `${raw.label||""} ${raw.title||""}`.toLowerCase();
+      const ok = toks.every(t => hay.includes(t));
+      if(ok) out.push(id);
+    }
+    return out;
+  }
+
+  function bfsDepth(matchIds, depth){
+    const dmap = new Map();
+    const q = [];
+    for(const id of matchIds){
+      dmap.set(id, 0);
+      q.push(id);
+    }
+    while(q.length){
+      const cur = q.shift();
+      const curD = dmap.get(cur) || 0;
+      if(curD >= depth) continue;
+      const nei = adjacency.get(cur) || new Set();
+      for(const nb of nei){
+        if(!dmap.has(nb)){
+          dmap.set(nb, curD + 1);
+          q.push(nb);
+        }
+      }
+    }
+    return dmap;
+  }
+
+  function applySelection(matchIds, depthMap, mode){
+    if(!nodesDS || !edgesDS) return;
+    const selected = new Set(depthMap ? Array.from(depthMap.keys()) : matchIds);
+    lastSelection = selected;
+    const palette = ["#FF5A1F", "#FF7D51", "#FFA581", "#FFC9B1", "#FFE3D8", "#FFF1EA"];
+
+    const nUpd = [];
+    for(const n of nodesDS.get()){
+      const base = baseLabels.get(n.id) || n.label;
+      if(selected.size === 0){
+        const kind = baseKind.get(n.id) || "knowledge";
+        const isWiki = kind === "wiki";
+        nUpd.push({
+          id: n.id,
+          label: base,
+          hidden: false,
+          opacity: 1,
+          color: isWiki ? {background:"#E3D5F5", border:"#1E1A16"} : {background:"#CDE8D5", border:"#1E1A16"},
+          font: {color:"#1E1A16", size: 11, face:"Space Mono"},
+        });
+        continue;
+      }
+      if(selected.has(n.id)){
+        const lvl = depthMap ? Number(depthMap.get(n.id) || 0) : 0;
+        const bg = palette[Math.min(lvl, palette.length-1)] || palette[palette.length-1];
+        const suffix = mode === "depth" && lvl > 0 ? ` (d${lvl})` : "";
+        nUpd.push({
+          id: n.id,
+          label: base + suffix,
+          hidden: false,
+          opacity: 1,
+          color: {background:bg, border:"#1E1A16"},
+          font: {color: lvl===0 ? "#fff" : "#1E1A16", size: 11, face:"Space Mono"},
+        });
+      }else{
+        nUpd.push({
+          id: n.id,
+          label: base,
+          hidden: false,
+          opacity: 0.18,
+          color: {background:"#F1EEE9", border:"#C9BEAC"},
+          font: {color:"#B0A69A", size: 10, face:"Space Mono"},
+        });
+      }
+    }
+
+    const eUpd = [];
+    for(const e of edgesDS.get()){
+      const on = selected.has(e.from) && selected.has(e.to);
+      if(selected.size === 0){
+        eUpd.push({
+          id: e.id,
+          hidden: false,
+          color: {color: (edgeRawMap.get(e.id)?.kind === "wiki_link" ? "#7b6f8f" : "#FF5A1F")},
+          width: 1.2,
+        });
+      }else if(on){
+        const lvlFrom = depthMap ? Number(depthMap.get(e.from) || 0) : 0;
+        const lvlTo = depthMap ? Number(depthMap.get(e.to) || 0) : 0;
+        const lv = Math.max(lvlFrom, lvlTo);
+        const col = lv === 0 ? "#FF5A1F" : "#FF8C66";
+        eUpd.push({id: e.id, hidden: false, color: {color: col}, width: 2});
+      }else{
+        eUpd.push({id: e.id, hidden: false, color: {color: "#E6DDD0"}, width: 0.6});
+      }
+    }
+
+    nodesDS.update(nUpd);
+    edgesDS.update(eUpd);
+  }
+
+  function buildContextFromSelection(depthMap){
+    const rows = [];
+    const ordered = Array.from(depthMap.entries()).sort((a,b)=>a[1]-b[1]);
+    for(const [id, d] of ordered){
+      const raw = nodeRawMap.get(id);
+      if(!raw) continue;
+      const title = String(raw.title || raw.label || "").replace(/\s+/g, " ").trim();
+      if(!title) continue;
+      rows.push(`[d${d}] ${title}`);
+      if(rows.length >= 18) break;
+    }
+    return rows;
+  }
+
+  async function runKgSummary(q, ctxRows){
+    if(!searchSummary) return;
+    const ctx = ctxRows && ctxRows.length ? ctxRows.join("\n") : "";
+    const withCtx = (searchCtx && searchCtx.checked && ctx)
+      ? `${q}\n\nКонтекст из knowledge graph:\n${ctx}`
+      : q;
+    searchSummary.style.display = "block";
+    searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#6b6055">Генерирую LLM-summary…</span>`;
+    try{
+      const d = await fetchJson("/api/search/hybrid", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({q: withCtx, limit: 8, llm_summary: true})
+      });
+      if(!d.ok){
+        searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Ошибка summary: ${esc(d.error||"unknown")}</span>`;
+        return;
+      }
+      if(d.summary){
+        searchSummary.innerHTML = `<div class="mono" style="font-size:10px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-summary</div>${mdToHtml(d.summary)}`;
+      }else if(d.summary_error){
+        searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Не удалось: ${esc(d.summary_error)}</span>`;
+      }else{
+        searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Summary не вернулся.</span>`;
+      }
+    }catch(_){
+      searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Ошибка сети при summary.</span>`;
+    }
+  }
+
+  function applyRealtimeFilter(){
+    const q = (searchQ?.value || "").trim();
+    if(!q || q.length < 2){
+      lastMatches = [];
+      if(searchHint) searchHint.textContent = "Подсветка работает при вводе. Глубина применяется по кнопке лупы.";
+      resetVisual();
+      return;
+    }
+    const matches = findMatches(q);
+    lastMatches = matches;
+    applySelection(matches, null, "live");
+    if(searchHint) searchHint.textContent = matches.length
+      ? `Совпадений: ${matches.length}. Нажмите лупу для применения глубины связей.`
+      : "Совпадений нет.";
+  }
+
+  function applyDepthByButton(){
+    const q = (searchQ?.value || "").trim();
+    if(!q || q.length < 2){
+      toast("Введите запрос (мин. 2 символа)");
+      return;
+    }
+    const depth = Math.max(1, Math.min(5, Number(depthEl?.value || 2)));
+    const matches = lastMatches.length ? lastMatches : findMatches(q);
+    if(!matches.length){
+      toast("Совпадений не найдено");
+      return;
+    }
+    const dmap = bfsDepth(matches, depth);
+    applySelection(matches, dmap, "depth");
+
+    const rows = buildContextFromSelection(dmap);
+    window.__kg_graph_context = rows.join("\n");
+    if(searchCtx && searchCtx.checked){
+      if(searchHint) searchHint.textContent = `Глубина ${depth} применена. В контекст добавлено: ${rows.length} фрагментов.`;
+    }else{
+      if(searchHint) searchHint.textContent = `Глубина ${depth} применена. Фрагменты: ${rows.length} (контекст выключен).`;
+    }
+
+    if(searchLlm && searchLlm.checked){
+      runKgSummary(q, rows);
+    }else if(searchSummary){
+      searchSummary.style.display = "none";
+      searchSummary.innerHTML = "";
     }
   }
 
@@ -182,6 +437,14 @@
     const inNodes = payload.nodes || [];
     const inEdges = payload.edges || [];
 
+    for(const n of inNodes){
+      nodeRawMap.set(n.id, n);
+      baseKind.set(n.id, n.kind || "knowledge");
+    }
+    for(const e of inEdges){
+      edgeRawMap.set(e.id, e);
+    }
+
     if(!network){
       const visNodes = inNodes.map(toVisNode);
       const visEdges = inEdges.map(toVisEdge);
@@ -189,6 +452,8 @@
       edgesDS = new vis.DataSet(visEdges);
       knownNodeIds = new Set(visNodes.map(n=>n.id));
       knownEdgeIds = new Set(visEdges.map(e=>e.id));
+      baseLabels = new Map(visNodes.map(n=>[n.id, n.label]));
+      rebuildAdjacency();
 
       const data = {nodes: nodesDS, edges: edgesDS};
       const options = {
@@ -245,25 +510,30 @@
 
     if(addNodes.length){
       nodesDS.add(addNodes);
-      for(const n of addNodes) knownNodeIds.add(n.id);
+      for(const n of addNodes){
+        knownNodeIds.add(n.id);
+        baseLabels.set(n.id, n.label);
+      }
     }
     if(addEdges.length){
       edgesDS.add(addEdges);
       for(const e of addEdges) knownEdgeIds.add(e.id);
     }
 
+    rebuildAdjacency();
     enableJelly(1000);
-
     updateGraphInfo(payload);
     return true;
   }
-
 
   async function refreshGraph(){
     try{
       const d = await fetchJson("/api/graph?limit_nodes=450&limit_wiki=120");
       if(!d.ok) return;
       syncGraph(d);
+      if(searchQ && String(searchQ.value||"").trim().length>=2){
+        applyRealtimeFilter();
+      }
     }catch(_){ }
   }
 
@@ -281,9 +551,19 @@
         edgesDS = new vis.DataSet(visEdges);
         knownNodeIds = new Set(visNodes.map(n=>n.id));
         knownEdgeIds = new Set(visEdges.map(e=>e.id));
+        baseLabels = new Map(visNodes.map(n=>[n.id, n.label]));
+        nodeRawMap = new Map((d.nodes||[]).map(n=>[n.id, n]));
+        edgeRawMap = new Map((d.edges||[]).map(e=>[e.id, e]));
+        baseKind = new Map((d.nodes||[]).map(n=>[n.id, n.kind || "knowledge"]));
+        rebuildAdjacency();
         network.setData({nodes: nodesDS, edges: edgesDS});
         enableJelly(1100);
         updateGraphInfo(d);
+      }
+      if(searchQ && String(searchQ.value||"").trim().length>=2){
+        applyRealtimeFilter();
+      }else{
+        resetVisual();
       }
       toast("Граф обновлён");
     }catch(_){
@@ -295,6 +575,42 @@
 
   if(btnRefresh){
     btnRefresh.onclick = hardRefreshGraph;
+  }
+
+  if(btnSearchToggle && searchBox){
+    btnSearchToggle.onclick = ()=>{
+      const open = searchBox.style.display !== "none";
+      searchBox.style.display = open ? "none" : "block";
+      btnSearchToggle.textContent = open ? "Поиск по графу ▾" : "Поиск по графу ▴";
+    };
+  }
+
+  if(depthEl && depthVal){
+    const syncDepth = ()=> depthVal.textContent = String(depthEl.value || "2");
+    depthEl.addEventListener("input", syncDepth);
+    syncDepth();
+  }
+
+  if(searchQ){
+    searchQ.addEventListener("input", applyRealtimeFilter);
+    searchQ.addEventListener("keydown", (e)=>{
+      if(e.key === "Enter"){
+        e.preventDefault();
+        applyDepthByButton();
+      }
+    });
+  }
+
+  if(searchGo){
+    searchGo.onclick = applyDepthByButton;
+  }
+
+  if(searchCtx){
+    searchCtx.addEventListener("change", ()=>{
+      if(!searchCtx.checked){
+        window.__kg_graph_context = "";
+      }
+    });
   }
 
   btnStart.onclick = async ()=>{
@@ -324,7 +640,6 @@
       await refreshGraph();
     }catch(_){ toast("Ошибка управления генерацией графа"); }
   };
-
 
   refreshStatus();
   refreshGraph();

@@ -123,7 +123,31 @@
   .flt-f{display:flex; flex-direction:column; gap:5px; font-family:'Space Mono',monospace;
     font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:#6b6055}
   .flt-f input, .flt-f select{border:2px solid var(--ink); background:#fff; padding:8px 9px;
-    font-family:'Archivo',sans-serif; font-size:13px; color:var(--ink)}
+    font-family:'Archivo',sans-serif; font-size:13px; color:var(--ink); border-radius:0;
+    transition:box-shadow .1s, border-color .1s}
+  .flt-f input:focus, .flt-f select:focus{outline:none; box-shadow:3px 3px 0 var(--orange)}
+  /* ---- кастомный селект: своя оранжевая стрелка ---- */
+  .flt-f select{-webkit-appearance:none; -moz-appearance:none; appearance:none;
+    padding-right:30px; cursor:pointer;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--orange) 50%),
+      linear-gradient(135deg, var(--orange) 50%, transparent 50%);
+    background-position:calc(100% - 15px) 55%, calc(100% - 10px) 55%;
+    background-size:5px 5px, 5px 5px; background-repeat:no-repeat}
+  .flt-f select:hover{border-color:var(--orange)}
+  /* ---- кастомный number со степпером: прячем нативные стрелки ---- */
+  .num-wrap{position:relative; display:flex}
+  .num-wrap input[type=number]{flex:1; -moz-appearance:textfield; padding-right:26px; width:100%}
+  .num-wrap input[type=number]::-webkit-outer-spin-button,
+  .num-wrap input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none; margin:0}
+  .num-steps{position:absolute; right:0; top:0; bottom:0; width:22px;
+    display:flex; flex-direction:column; border-left:2px solid var(--ink)}
+  .num-steps button{flex:1; border:0; background:#fff; color:var(--ink); cursor:pointer;
+    font-size:8px; line-height:1; padding:0; display:flex; align-items:center; justify-content:center;
+    font-family:'Space Mono',monospace; transition:background .08s, color .08s}
+  .num-steps button:hover{background:var(--orange); color:#fff}
+  .num-steps button:first-child{border-bottom:1px solid var(--ink)}
+  .num-steps button:active{background:var(--ink); color:var(--orange)}
   .flt-actions{display:flex; align-items:center; gap:10px; margin-top:16px; flex-wrap:wrap}
   .flt-hint{font-size:10px; color:#6b6055; letter-spacing:.06em}
   .filter{font-size:11px; letter-spacing:.1em; display:flex; align-items:center; gap:8px; cursor:pointer}
@@ -423,10 +447,22 @@
           </select>
         </label>
         <label class="flt-f">Score от
-          <input type="number" id="f-smin" step="0.05" min="0" max="1" placeholder="0.00">
+          <span class="num-wrap">
+            <input type="number" id="f-smin" step="0.05" min="0" max="1" placeholder="0.00">
+            <span class="num-steps">
+              <button type="button" data-step="up" data-target="f-smin">▲</button>
+              <button type="button" data-step="down" data-target="f-smin">▼</button>
+            </span>
+          </span>
         </label>
         <label class="flt-f">Score до
-          <input type="number" id="f-smax" step="0.05" min="0" max="1" placeholder="1.00">
+          <span class="num-wrap">
+            <input type="number" id="f-smax" step="0.05" min="0" max="1" placeholder="1.00">
+            <span class="num-steps">
+              <button type="button" data-step="up" data-target="f-smax">▲</button>
+              <button type="button" data-step="down" data-target="f-smax">▼</button>
+            </span>
+          </span>
         </label>
         <label class="flt-f">Дата с
           <input type="date" id="f-dfrom">
@@ -1044,6 +1080,23 @@ function refreshFilterHint(){
 }
 
 $("#flt-toggle").onclick = ()=> $("#flt-panel").classList.toggle("on");
+
+// ---------------- CUSTOM NUMBER STEPPERS (score) ----------------
+document.querySelectorAll(".num-steps button").forEach(btn=>{
+  btn.onclick = ()=>{
+    const inp = document.getElementById(btn.dataset.target);
+    if(!inp) return;
+    const step = parseFloat(inp.step) || 0.05;
+    const min  = inp.min !== "" ? parseFloat(inp.min) : -Infinity;
+    const max  = inp.max !== "" ? parseFloat(inp.max) :  Infinity;
+    let v = parseFloat(inp.value);
+    if(isNaN(v)) v = (btn.dataset.step === "up" ? min !== -Infinity ? min : 0 : max !== Infinity ? max : 0);
+    else v += (btn.dataset.step === "up" ? step : -step);
+    v = Math.min(max, Math.max(min, v));
+    // округляем до шага, чтобы не плодить 0.15000000000002
+    inp.value = (Math.round(v / step) * step).toFixed(2);
+  };
+});
 
 $("#flt-apply").onclick = ()=>{
   refreshFilterHint(); loadArticles(1);

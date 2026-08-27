@@ -40,6 +40,85 @@
   let lastSelection = new Set();
 
   const MAX_CTX = 15; // лимит чанков, реально уходящих в модель
+  const HYBRID_STATE_KEY = "kg_hybrid_state_v1";
+  let lastHybridState = null;
+
+  function saveHybridState(state){
+    lastHybridState = state;
+    try{ sessionStorage.setItem(HYBRID_STATE_KEY, JSON.stringify(state)); }catch(_){ }
+  }
+
+  function clearHybridState(){
+    lastHybridState = null;
+    try{ sessionStorage.removeItem(HYBRID_STATE_KEY); }catch(_){ }
+  }
+
+  function restoreHybridStateFromSession(){
+    try{
+      const raw = sessionStorage.getItem(HYBRID_STATE_KEY);
+      if(!raw) return;
+      const st = JSON.parse(raw);
+      if(!st || typeof st.q !== "string") return;
+      lastHybridState = st;
+      if(searchQ && !String(searchQ.value||"").trim()) searchQ.value = st.q;
+      if(searchLlm && typeof st.want_summary === "boolean") searchLlm.checked = !!st.want_summary;
+      if(depthEl && Number.isFinite(Number(st.depth))){
+        depthEl.value = String(Math.max(0, Math.min(5, Number(st.depth))));
+      }
+      if(depthVal && depthEl) depthVal.textContent = String(depthEl.value || "2");
+      if(searchBox && btnSearchToggle){
+        searchBox.style.display = "block";
+        btnSearchToggle.textContent = "Поиск по графу ▴";
+      }
+    }catch(_){ }
+  }
+
+  function reapplyHybridState(){
+    if(!lastHybridState) return false;
+    const qNow = String(searchQ?.value || "").trim();
+    if(!qNow || qNow !== String(lastHybridState.q || "")) return false;
+
+    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || lastHybridState.depth || 2)));
+    const found = Number(lastHybridState.found || 0);
+    const used = Number(lastHybridState.used || 0);
+    const maxCtx = Number(lastHybridState.max_ctx || MAX_CTX);
+    const serverNodeIds = Array.isArray(lastHybridState.node_ids) ? lastHybridState.node_ids : [];
+    const presentIds = serverNodeIds.filter(id => nodeRawMap.has(id));
+
+    if(presentIds.length){
+      const dmap = bfsDepth(presentIds, depth);
+      applySelection(presentIds, dmap, "depth");
+    }else{
+      applySelection([], null, "live");
+    }
+
+    if(chunksCount) chunksCount.textContent = `найдено ${found} · в модель ${used}/${maxCtx} · depth ${depth}`;
+    if(searchHint){
+      searchHint.textContent = found
+        ? `Гибридный поиск: найдено ${found}, в модель ${used}/${maxCtx}. На графе подсвечено ${presentIds.length}.`
+        : `Гибридный поиск: совпадений в базе нет.`;
+    }
+
+    if(searchSummary){
+      const wantSummary = !!lastHybridState.want_summary;
+      if(!wantSummary){
+        searchSummary.style.display = "none";
+        searchSummary.innerHTML = "";
+      }else if(lastHybridState.summary){
+        const meta = `найдено ${found} · в модель ${used}/${maxCtx}`;
+        searchSummary.style.display = "block";
+        searchSummary.innerHTML = `<div class="mono" style="font-size:10px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-саммари · ${meta}</div>${mdToHtml(lastHybridState.summary)}`;
+      }else if(lastHybridState.summary_error){
+        searchSummary.style.display = "block";
+        searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Не удалось: ${esc(lastHybridState.summary_error)}</span>`;
+      }else if(found === 0){
+        searchSummary.style.display = "block";
+        searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Совпадений в базе нет — саммари не по чему строить.</span>`;
+      }
+    }
+
+    return true;
+  }
 
   function esc(s){
     return String(s||"").replace(/[&<>\"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
@@ -344,6 +423,7 @@
   // независимо от того, есть ли локальные совпадения подсветки.
   async function runHybridKg(q){
     if(!q || q.length < 2){
+      clearHybridState();
       toast("Введите запрос (мин. 2 символа)");
       return;
     }
@@ -381,6 +461,18 @@
 
     // Подсветим узлы, которые сервер вернул как результат гибридного поиска.
     const serverNodeIds = (d.items || []).map(it => it.node_id).filter(Boolean);
+    saveHybridState({
+      q,
+      depth,
+      want_summary: wantSummary,
+      found,
+      used,
+      max_ctx: maxCtx,
+      node_ids: serverNodeIds,
+      summary: d.summary || null,
+      summary_error: d.summary_error || null,
+      ts: Date.now(),
+    });
     const presentIds = serverNodeIds.filter(id => nodeRawMap.has(id));
     if(presentIds.length){
       const dmap = bfsDepth(presentIds, depth);
@@ -598,8 +690,10 @@
       const d = await fetchJson("/api/graph?limit_nodes=450&limit_wiki=120");
       if(!d.ok) return;
       syncGraph(d);
-      if(searchQ && String(searchQ.value||"").trim().length>=2){
-        applyRealtimeFilter();
+      if(!(reapplyHybridState())){
+        if(searchQ && String(searchQ.value||"").trim().length>=2){
+          applyRealtimeFilter();
+        }
       }
     }catch(_){ }
   }
@@ -627,10 +721,12 @@
         enableJelly(1100);
         updateGraphInfo(d);
       }
-      if(searchQ && String(searchQ.value||"").trim().length>=2){
-        applyRealtimeFilter();
-      }else{
-        resetVisual();
+      if(!(reapplyHybridState())){
+        if(searchQ && String(searchQ.value||"").trim().length>=2){
+          applyRealtimeFilter();
+        }else{
+          resetVisual();
+        }
       }
       toast("Граф обновлён");
     }catch(_){

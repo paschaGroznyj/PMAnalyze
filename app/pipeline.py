@@ -227,6 +227,14 @@ class PMAnalyzePipeline:
             return ua
         return ""
 
+    @classmethod
+    def _first_valid_http_url(cls, *urls: str) -> str:
+        for u in urls:
+            v = (u or "").strip()
+            if cls._is_valid_http_url(v):
+                return v
+        return ""
+
     # ---------------- lifecycle ----------------
     async def start(self):
         if self._task is None:
@@ -710,7 +718,7 @@ class PMAnalyzePipeline:
         # Ссылка в промпте должна указывать на реальный PDF-документ.
         source_url = self._pick_preferred_source_url(url_article, pdf_url)
         if not source_url:
-            source_url = pdf_url or url_article
+            source_url = self._first_valid_http_url(pdf_url, url_article)
         original_source_url = source_url
 
         page_text = ""
@@ -731,9 +739,9 @@ class PMAnalyzePipeline:
             if "ieeexplore.ieee.org" in source:
                 candidate_urls = self._ieee_candidate_urls(url_article, pdf_url)
             else:
-                # Общий порядок: сначала страница статьи, затем pdf
-                for u in [url_article, source_url, pdf_url]:
-                    if u and u not in candidate_urls:
+                # Общий порядок: приоритет PDF (и валидных http), затем страница статьи.
+                for u in [pdf_url, source_url, url_article]:
+                    if self._is_valid_http_url(u) and u not in candidate_urls:
                         candidate_urls.append(u)
 
             for u in candidate_urls:
@@ -1029,7 +1037,7 @@ class PMAnalyzePipeline:
 
         source_url = self._pick_preferred_source_url(url_article, pdf_url)
         if not source_url:
-            source_url = pdf_url or url_article
+            source_url = self._first_valid_http_url(pdf_url, url_article)
         original_source_url = source_url
 
         if source.startswith("yandex_disk:"):
@@ -1047,8 +1055,8 @@ class PMAnalyzePipeline:
             if "ieeexplore.ieee.org" in source:
                 candidate_urls = self._ieee_candidate_urls(url_article, pdf_url)
             else:
-                for u in [url_article, source_url, pdf_url]:
-                    if u and u not in candidate_urls:
+                for u in [pdf_url, source_url, url_article]:
+                    if self._is_valid_http_url(u) and u not in candidate_urls:
                         candidate_urls.append(u)
 
             for u in candidate_urls:
@@ -1085,7 +1093,8 @@ class PMAnalyzePipeline:
 
         abstract_text = (art.get("abstract") or "").strip()
         if abstract_text:
-            return abstract_text[:8000], (source_url or pdf_url or url_article or "").strip(), None
+            fallback_url = self._first_valid_http_url(source_url, pdf_url, url_article)
+            return abstract_text[:8000], fallback_url, None
 
         return "", source_url, "content_unavailable_or_invalid_source_url"
 
@@ -1323,8 +1332,13 @@ class PMAnalyzePipeline:
                             continue
 
                         status = "active" if verdict == "pass" else "review"
+                        meta_source = self._first_valid_http_url(
+                            source_url,
+                            (art.get("pdf_url") or ""),
+                            (art.get("url_article") or ""),
+                        )
                         meta = {
-                            "source": source_url or art.get("url_article") or art.get("pdf_url") or "",
+                            "source": meta_source,
                             "article_id": aid,
                             "article_title": art.get("title") or "",
                             "tags": tags,
@@ -1559,7 +1573,7 @@ class PMAnalyzePipeline:
                                         )
                                 else:
                                     w_status = "active" if w_verdict == "pass" else "draft"
-                                    source_url_text = (source_url or "").strip()
+                                    source_url_text = self._first_valid_http_url(source_url)
                                     src_ids_json = json.dumps(src_ids)
                                     async with self.pool.acquire() as con:
                                         existing_wid = await con.fetchval(

@@ -124,6 +124,14 @@
   tbody td.c{text-align:center; font-family:'Space Mono',monospace; font-size:12px}
   tbody tr{cursor:pointer; transition:background .1s}
   tbody tr:hover{background:var(--peach)}
+  tbody tr.quarantined{background:rgba(255,90,31,.10)}
+  .q-cell{width:54px; text-align:center}
+  .q-wrap{display:flex; justify-content:center}
+  .q-box{
+    width:20px; height:20px; border:2px solid var(--ink); background:#fff; cursor:pointer;
+    display:inline-block; transition:all .08s;
+  }
+  .q-box.on{background:var(--orange); box-shadow:inset 0 0 0 2px var(--orange)}
   .t-title{font-weight:600; max-width:420px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .t-cat{font-size:11px; color:#6b6055}
   .badge{display:inline-block; padding:2px 8px; border:2px solid var(--ink);
@@ -352,7 +360,7 @@
       <table id="art-table">
         <thead>
           <tr>
-            <th>Название</th><th>Категория</th><th class="c">Score</th>
+            <th class="c">Q</th><th>Название</th><th>Категория</th><th class="c">Score</th>
             <th class="c">Рел.</th><th class="c">Ревью</th><th class="c">Дата</th>
           </tr>
         </thead>
@@ -802,6 +810,23 @@ function mdToHtml(md){
   return html;
 }
 
+async function toggleQuarantine(articleId, nextActive){
+  try{
+    const r = await fetch(`/api/articles/${articleId}/quarantine`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({active: !!nextActive})
+    });
+    const d = await r.json();
+    if(!d.ok) throw new Error(d.error || "toggle_failed");
+    return true;
+  }catch(e){
+    console.error(e);
+    toast("Не удалось обновить карантин");
+    return false;
+  }
+}
+
 async function loadArticles(page){
   artPage = page || artPage;
   try{
@@ -812,7 +837,7 @@ async function loadArticles(page){
     $("#tbl-count").textContent = `${d.total} статей · стр. ${d.page}/${d.pages}`;
     const body = $("#art-body"); body.innerHTML = "";
     if(!d.articles.length){
-      body.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:#6b6055">Нет статей</td></tr>`;
+      body.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:#6b6055">Нет статей</td></tr>`;
     }
     d.articles.forEach(a=>{
       const score = a.relevance_score!=null ? Number(a.relevance_score).toFixed(2) : "—";
@@ -822,16 +847,38 @@ async function loadArticles(page){
       const rev = a.has_review
         ? '<span class="badge rev">есть</span>'
         : '<span class="badge norev">нет</span>';
+      const qOn = !!a.quarantine_active;
       const tr = document.createElement("tr");
+      if(qOn) tr.classList.add("quarantined");
       tr.innerHTML =
-        `<td class="t-title">${esc(a.title||"Без названия")}</td>
+        `<td class="q-cell"><div class="q-wrap"><span class="q-box ${qOn ? "on" : ""}" data-q-id="${a.id}" data-q-on="${qOn ? "1" : "0"}" title="Карантин"></span></div></td>
+         <td class="t-title">${esc(a.title||"Без названия")}</td>
          <td class="t-cat">${esc(a.category||"—")}</td>
          <td class="c">${score}</td>
          <td class="c">${rel}</td>
          <td class="c">${rev}</td>
          <td class="c">${fmtDate(a.date_sub)}</td>`;
-      tr.onclick = ()=> openArticle(a.id);
+      tr.onclick = (ev)=>{
+        if(ev.target && ev.target.closest('.q-box')) return;
+        openArticle(a.id);
+      };
       body.appendChild(tr);
+
+      const q = tr.querySelector('.q-box');
+      if(q){
+        q.onclick = async (ev)=>{
+          ev.stopPropagation();
+          const isOn = q.dataset.qOn === "1";
+          q.style.pointerEvents = "none";
+          const ok = await toggleQuarantine(a.id, !isOn);
+          if(ok){
+            q.dataset.qOn = isOn ? "0" : "1";
+            q.classList.toggle("on", !isOn);
+            tr.classList.toggle("quarantined", !isOn);
+          }
+          q.style.pointerEvents = "auto";
+        };
+      }
     });
     drawPager();
   }catch(e){ toast("Ошибка загрузки статей"); console.error(e); }

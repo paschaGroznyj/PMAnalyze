@@ -20,7 +20,7 @@ PM articles parser — подключаемый патч-модуль для с�
 import asyncio
 import hashlib
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -79,6 +79,34 @@ class PMParserService:
     def __init__(self):
         self.timeout_http = float(os.getenv("PARSER_HTTP_TIMEOUT_SECONDS", "40"))
         self.timeout_scholar = float(os.getenv("PARSER_SCHOLAR_TIMEOUT_SECONDS", "60"))
+        self.fresh_days = max(1, int(os.getenv("PARSER_FRESH_DAYS", "183")))
+        self.min_pub_date = datetime.now(timezone.utc).date() - timedelta(days=self.fresh_days)
+
+    def _is_recent_enough(self, d: date | None) -> bool:
+        return bool(d and d >= self.min_pub_date)
+
+    def _coerce_date(self, value: str) -> date | None:
+        s = (value or "").strip()
+        if not s:
+            return None
+        try:
+            return datetime.strptime(s[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    def _year_to_date(self, value) -> date | None:
+        if value is None:
+            return None
+        try:
+            y = int(value)
+            if 1900 <= y <= 2100:
+                return date(y, 1, 1)
+        except Exception:
+            pass
+        return None
+
+    def _dt_to_str(self, d: date | None) -> str:
+        return d.strftime("%Y-%m-%d") if d else ""
 
     async def _parse_scholar_combined(self, query: str, max_per_source: int, ui_lang: str) -> list["PMArticle"]:
         """Google Scholar: сначала ScrapingDog API, при пустом результате —
@@ -123,6 +151,18 @@ class PMParserService:
             source_stats[src] = len(chunk)
             out.extend(chunk)
 
+        # Глобальная валидация свежести: оставляем только публикации не старше fresh_days.
+        out_recent: list[PMArticle] = []
+        dropped_old = 0
+        for a in out:
+            d = self._coerce_date(getattr(a, "date_sub", "") or "")
+            if not self._is_recent_enough(d):
+                dropped_old += 1
+                continue
+            a.date_sub = self._dt_to_str(d)
+            out_recent.append(a)
+        out = out_recent
+
         uniq = {}
         for a in out:
             if not a.external_id:
@@ -163,6 +203,9 @@ class PMParserService:
             title = _pm_re.sub(r"\s+", " ", (e.findtext("atom:title", "", ns) or "")).strip()
             abstract = _pm_re.sub(r"\s+", " ", (e.findtext("atom:summary", "", ns) or "")).strip()
             published = (e.findtext("atom:published", "", ns) or "")[:10]
+            published_dt = self._coerce_date(published)
+            if not self._is_recent_enough(published_dt):
+                continue
 
             pdf_url = ""
             for l in e.findall("atom:link", ns):

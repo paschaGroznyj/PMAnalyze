@@ -126,6 +126,31 @@ async def lifespan(app: FastAPI):
             ON process_mining.ui_onboarding(created_at DESC)
         """)
 
+        # Карантин статей в UI (ручные отметки на панели Articles).
+        # active=TRUE -> статья помечена к перепроверке/удалению.
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.ui_article_quarantine (
+                article_id BIGINT PRIMARY KEY,
+                active BOOLEAN NOT NULL DEFAULT TRUE,
+                note TEXT,
+                marked_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT fk_ui_article_quarantine_article
+                    FOREIGN KEY(article_id)
+                    REFERENCES process_mining.papers_metadata(id)
+                    ON DELETE CASCADE
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ui_article_quarantine_active
+            ON process_mining.ui_article_quarantine(active)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ui_article_quarantine_updated_at
+            ON process_mining.ui_article_quarantine(updated_at DESC)
+        """)
+
     await pipeline.start()
 
     digest_stop.clear()
@@ -767,10 +792,10 @@ async def list_articles(page: int = 1, per_page: int = 20, only_relevant: bool =
     page = max(1, page)
     per_page = min(50, max(1, per_page))
     offset = (page - 1) * per_page
-    where = "WHERE is_relevant = TRUE" if only_relevant else ""
+    where = "WHERE p.is_relevant = TRUE" if only_relevant else ""
     async with pool.acquire() as con:
         total = await con.fetchval(
-            f"SELECT count(*) FROM process_mining.papers_metadata {where}")
+            f"SELECT count(*) FROM process_mining.papers_metadata p {where}")
         rows = await con.fetch(f"""
             SELECT p.id, p.source, p.title, p.date_sub, p.url_article,
                    p.category, p.relevance_score, p.is_relevant,
@@ -779,9 +804,11 @@ async def list_articles(page: int = 1, per_page: int = 20, only_relevant: bool =
                    CASE
                      WHEN p.source ILIKE 'yandex_disk:%' THEN COALESCE(p.pdf_url, p.url_article)
                      ELSE p.url_article
-                   END AS display_url
+                   END AS display_url,
+                   COALESCE(q.active, FALSE) AS quarantine_active
             FROM process_mining.papers_metadata p
             LEFT JOIN process_mining.reviews r ON r.article_id = p.id
+            LEFT JOIN process_mining.ui_article_quarantine q ON q.article_id = p.id
             {where}
             ORDER BY p.date_sub DESC NULLS LAST, p.id DESC
             LIMIT $1 OFFSET $2
@@ -812,6 +839,73 @@ async def get_review(article_id: int):
     # authors может быть array/object/json-string — отдаем стабильно list[str]
     a["authors"] = _normalize_authors_payload(a.get("authors"))
     return {"ok": True, "article": a, "review": dict(rev) if rev else None}
+
+
+
+class QuarantineToggleReq(BaseModel):
+    active: bool
+    note: str | None = None
+
+
+@app.post("/api/articles/{article_id}/quarantine")
+async def set_article_quarantine(article_id: int, req: QuarantineToggleReq, request: Request):
+    article_id = int(article_id)
+    active = bool(req.active)
+    note = (req.note or "").strip() or None
+    ident = current_identity(request)
+    marker = ident.get("username") or ident.get("user_id") or _get_visitor_id(request)
+
+    async with pool.acquire() as con:
+        exists = await con.fetchval(
+            "SELECT 1 FROM process_mining.papers_metadata WHERE id=$1",
+            article_id,
+        )
+        if not exists:
+            return JSONResponse({"ok": False, "error": "article_not_found"}, status_code=404)
+
+        if active:
+            await con.execute(
+                """
+                INSERT INTO process_mining.ui_article_quarantine(article_id, active, note, marked_by, created_at, updated_at)
+                VALUES($1, TRUE, $2, $3, NOW(), NOW())
+                ON CONFLICT (article_id)
+                DO UPDATE SET
+                    active = TRUE,
+                    note = EXCLUDED.note,
+                    marked_by = EXCLUDED.marked_by,
+                    updated_at = NOW()
+                """,
+                article_id,
+                note,
+                marker,
+            )
+        else:
+            await con.execute(
+                """
+                INSERT INTO process_mining.ui_article_quarantine(article_id, active, note, marked_by, created_at, updated_at)
+                VALUES($1, FALSE, $2, $3, NOW(), NOW())
+                ON CONFLICT (article_id)
+                DO UPDATE SET
+                    active = FALSE,
+                    note = EXCLUDED.note,
+                    marked_by = EXCLUDED.marked_by,
+                    updated_at = NOW()
+                """,
+                article_id,
+                note,
+                marker,
+            )
+
+        row = await con.fetchrow(
+            """
+            SELECT article_id, active, note, marked_by, created_at, updated_at
+            FROM process_mining.ui_article_quarantine
+            WHERE article_id=$1
+            """,
+            article_id,
+        )
+
+    return {"ok": True, "quarantine": dict(row)}
 
 
 

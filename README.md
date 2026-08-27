@@ -16,6 +16,11 @@
 - `papers_metadata` — метаданные + флаги (все обнулены на старте)
 - `reviews` — ревью в markdown (1:1 к статье)
 - `parser_runs` — журнал запусков
+- `ui_article_quarantine` — ручные отметки «карантина» из панели Articles.
+  Нужна для операционной работы: пометить статьи на перепроверку/удаление.
+  Используется UI-чекбоксом (колонка `Q`) и API:
+  - `GET /api/articles` -> поле `quarantine_active`
+  - `POST /api/articles/{id}/quarantine` -> включить/снять карантин.
 
 ## API
 - `POST /api/pipeline/run` — полный цикл (фон)

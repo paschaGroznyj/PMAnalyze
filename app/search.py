@@ -169,7 +169,14 @@ async def search_hybrid(pool, q: str, limit: int = 10, rrf_k: int = 60) -> list[
 
 
 # ---------------- 3. KG-HYBRID: поиск по узлам графа (knowledge + wiki) ----------------
-async def search_kg_hybrid(pool, q: str, limit: int = 15, rrf_k: int = 60) -> list[dict]:
+async def search_kg_hybrid(
+    pool,
+    q: str,
+    limit: int = 15,
+    rrf_k: int = 60,
+    vec_min_sim_knowledge: float = 0.50,
+    vec_min_sim_wiki: float = 0.50,
+) -> list[dict]:
     """Гибридный поиск (BM25 tsvector + pgvector) по узлам графа знаний.
 
     Ищет одновременно по process_mining.knowledge_embeddings (kind=knowledge)
@@ -202,10 +209,12 @@ async def search_kg_hybrid(pool, q: str, limit: int = 15, rrf_k: int = 60) -> li
                    1 - (ke.embedding <=> $1::vector) AS score
             FROM process_mining.knowledge_embeddings ke
             WHERE ke.embedding IS NOT NULL
+              AND (1 - (ke.embedding <=> $1::vector)) >= $2
             ORDER BY ke.embedding <=> $1::vector
             LIMIT 40
             """,
             vec_lit,
+            vec_min_sim_knowledge,
         )
         # --- wiki: BM25 + вектор ---
         w_bm25 = await con.fetch(
@@ -225,10 +234,12 @@ async def search_kg_hybrid(pool, q: str, limit: int = 15, rrf_k: int = 60) -> li
                    1 - (we.embedding <=> $1::vector) AS score
             FROM process_mining.wiki_page_embeddings we
             WHERE we.embedding IS NOT NULL
+              AND (1 - (we.embedding <=> $1::vector)) >= $2
             ORDER BY we.embedding <=> $1::vector
             LIMIT 40
             """,
             vec_lit,
+            vec_min_sim_wiki,
         )
 
         # RRF-слияние с раздельными пространствами ключей (kind, id)
@@ -243,6 +254,13 @@ async def search_kg_hybrid(pool, q: str, limit: int = 15, rrf_k: int = 60) -> li
         _accum(k_vec, "knowledge")
         _accum(w_bm25, "wiki")
         _accum(w_vec, "wiki")
+
+        has_bm25 = bool(k_bm25 or w_bm25)
+        has_vec = bool(k_vec or w_vec)
+        # Если нет ни текстовых совпадений, ни векторных кандидатов выше порога,
+        # возвращаем пустую выдачу вместо шумного fixed-top.
+        if not has_bm25 and not has_vec:
+            return []
 
         if not rank_scores:
             return []

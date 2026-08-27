@@ -30,7 +30,7 @@ from pydantic import BaseModel
 router = APIRouter()
 EXPECTED_KEY = os.getenv("PARSER_SERVICE_API_KEY", "").strip()
 
-PARSER_SOURCES_ORDER = ["arxiv_api", "arxiv_html", "crossref", "core_api", "fluxicon", "google_scholar"]
+PARSER_SOURCES_ORDER = ["arxiv_api", "arxiv_html", "crossref", "core_api", "fluxicon", "google_scholar", "ieee_openaccess_2026"]
 PARSER_SOURCES_SET = set(PARSER_SOURCES_ORDER)
 
 import re as _pm_re
@@ -69,10 +69,11 @@ class PMArticle:
     title: str
     date_sub: str
     pdf_url: str
-    authors: dict | None
-    tags: str | list | None
-    abstract: str
-    category: str | None
+    url_article: str | None = None
+    authors: dict | None = None
+    tags: str | list | None = None
+    abstract: str = ""
+    category: str | None = None
 
 
 class PMParserService:
@@ -108,6 +109,33 @@ class PMParserService:
     def _dt_to_str(self, d: date | None) -> str:
         return d.strftime("%Y-%m-%d") if d else ""
 
+    def _normalize_ieee_query(self, query: str) -> str:
+        q = (query or "").strip()
+        if not q:
+            return "process mining"
+
+        # Если прилетел boolean-запрос из общей цепочки (OR/AND, all:(...)),
+        # IEEE search лучше кормить одним устойчивым термином.
+        quoted = [x.strip() for x in _pm_re.findall(r'"([^"]+)"', q) if x and x.strip()]
+        if quoted:
+            preferred = [
+                "process mining",
+                "process discovery",
+                "conformance checking",
+                "event logs",
+                "task mining",
+            ]
+            ql = [x.lower() for x in quoted]
+            for pref in preferred:
+                if pref in ql:
+                    return quoted[ql.index(pref)]
+            return quoted[0]
+
+        q_plain = q.replace("all:(", "").replace("(", "").replace(")", "").strip()
+        if (" OR " in q.upper()) or (" AND " in q.upper()) or len(q_plain) > 120:
+            return "process mining"
+        return q_plain or "process mining"
+
     async def _parse_scholar_combined(self, query: str, max_per_source: int, ui_lang: str) -> list["PMArticle"]:
         """Google Scholar: сначала ScrapingDog API, при пустом результате —
         fallback на браузерный скрейп."""
@@ -128,15 +156,16 @@ class PMParserService:
         if not wanted:
             wanted = list(PARSER_SOURCES_ORDER)
 
-        task_map = {
-            "arxiv_api": self.parse_arxiv_api(query, max_per_source),
-            "arxiv_html": self.parse_arxiv_html(query, max_per_source),
-            "crossref": self.parse_crossref(query, max_per_source),
-            "core_api": self.parse_core_api(query, max_per_source),
-            "fluxicon": self.parse_fluxicon(max_per_source),
-            "google_scholar": self._parse_scholar_combined(query, max_per_source, ui_lang),
+        task_factories = {
+            "arxiv_api": lambda: self.parse_arxiv_api(query, max_per_source),
+            "arxiv_html": lambda: self.parse_arxiv_html(query, max_per_source),
+            "crossref": lambda: self.parse_crossref(query, max_per_source),
+            "core_api": lambda: self.parse_core_api(query, max_per_source),
+            "fluxicon": lambda: self.parse_fluxicon(max_per_source),
+            "google_scholar": lambda: self._parse_scholar_combined(query, max_per_source, ui_lang),
+            "ieee_openaccess_2026": lambda: self.parse_ieee_openaccess_2026(query, max_per_source),
         }
-        tasks = [task_map[s] for s in wanted]
+        tasks = [task_factories[s]() for s in wanted]
         chunks = await asyncio.gather(*tasks, return_exceptions=True)
 
         out: list[PMArticle] = []
@@ -872,6 +901,81 @@ class PMParserService:
         for a in out:
             uniq[a.external_id] = a
         return list(uniq.values())[:max_per_source]
+
+    async def parse_ieee_openaccess_2026(self, query: str, max_per_source: int) -> list[PMArticle]:
+        """IEEE Xplore OA 2026 через внутренний REST search API."""
+        rows = max(1, min(int(max_per_source), 25))
+        payload = {
+            "newsearch": True,
+            "queryText": self._normalize_ieee_query(query),
+            "highlight": True,
+            "returnType": "SEARCH",
+            "matchPubs": True,
+            "rowsPerPage": rows,
+            "pageNumber": 1,
+            "openAccess": True,
+            "returnFacets": ["ALL"],
+            "ranges": ["2026_2026_Year"],
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://ieeexplore.ieee.org",
+            "Referer": "https://ieeexplore.ieee.org/search/searchresult.jsp?queryText=process%20mining",
+            "User-Agent": "Mozilla/5.0",
+        }
+        out: list[PMArticle] = []
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_http, follow_redirects=True) as client:
+                r = await client.post("https://ieeexplore.ieee.org/rest/search", headers=headers, json=payload)
+                r.raise_for_status()
+                data = r.json() or {}
+        except Exception:
+            return []
+
+        recs = data.get("records") or data.get("results") or []
+        for it in recs:
+            title = _pm_re.sub(r"\s+", " ", str(it.get("articleTitle") or it.get("title") or "")).strip()
+            if not title:
+                continue
+            ar = str(it.get("articleNumber") or it.get("arnumber") or "").strip()
+            if not ar:
+                continue
+            pdf_url = f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={ar}"
+            url_article = f"https://ieeexplore.ieee.org/document/{ar}"
+            abstr = _pm_re.sub(r"\s+", " ", str(it.get("abstract") or "")).strip()
+            year = str(it.get("publicationYear") or "2026").strip()
+            date_sub = f"{year if year.isdigit() else '2026'}-01-01"
+            authors_raw = it.get("authors") or []
+            authors_list = []
+            if isinstance(authors_raw, list):
+                for a in authors_raw:
+                    if isinstance(a, dict):
+                        nm = (a.get("preferredName") or a.get("name") or "").strip()
+                        if nm:
+                            authors_list.append(nm)
+                    elif isinstance(a, str) and a.strip():
+                        authors_list.append(a.strip())
+            out.append(
+                PMArticle(
+                    source="ieee_openaccess_2026",
+                    external_id=ar,
+                    title=title,
+                    date_sub=date_sub,
+                    pdf_url=pdf_url,
+                    url_article=url_article,
+                    authors={"list": authors_list} if authors_list else None,
+                    tags=["ieee", "open_access", "2026"],
+                    abstract=abstr,
+                    category="process_mining",
+                )
+            )
+
+        uniq = {}
+        for a in out:
+            uniq[(a.source, a.external_id)] = a
+        ranked = list(uniq.values())
+        ranked.sort(key=lambda x: x.date_sub, reverse=True)
+        return ranked[:rows]
 
     def build_scholar_url(self, query: str, start: int, ui_lang: str = "ru", fulltext: bool = False) -> str:
         params = {

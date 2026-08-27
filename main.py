@@ -1,5 +1,6 @@
 """PMAnalyze API: управление еженедельным пайплайном + дашборд + дайджест."""
 import os
+import ast
 import asyncio
 import json
 import time
@@ -7,7 +8,7 @@ import logging
 import asyncpg
 import httpx
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date as _date
 
 import uuid
 
@@ -297,13 +298,43 @@ async def _digest_scheduler_loop():
             print(f"[pmanalyze] digest scheduler error: {e}")
 
 
+def _authors_from_dictlike_string(s):
+    """Достаёт имена авторов из строки-словаря без кавычек ключей.
+
+    Примеры входа:
+      "{Paul Kobialka: null, Andrea Pferscher: null}"
+      "{Xin Su: /search/?searchtype=author&query=Su%2C+X, Jia Wei: /search/...}"
+
+    Логика: имя автора — это подстрока ПЕРЕД ':'. Значение может содержать
+    запятые (напр. url-энкод 'Su%2C+X'), поэтому наивный split(',') сломается.
+    Мы ищем начало нового автора как ', <ключ>:' — то есть запятую, за которой
+    идёт текст до следующего ':'.
+    """
+    import re as _re
+    body = s.strip().strip('{}').strip()
+    if not body:
+        return []
+    # Разбиваем по запятой, ЗА которой следует "ключ:" (ключ без запятых/двоеточий).
+    # Разделитель — запятая, после которой идёт непустой текст и ':'.
+    parts = _re.split(r',(?=\s*[^,:]+?\s*:)', body)
+    names = []
+    for p in parts:
+        left = p.split(':', 1)[0].strip()
+        if left:
+            names.append(left)
+    return names
+
+
 def _normalize_authors_payload(raw):
-    """Нормализует authors к list[str] для API (array | object | json-string)."""
+    """Нормализует authors к list[str] для API.
+
+    Поддерживает: list | dict (авторы в ключах) | json-string | python-literal string.
+    """
     def clean_list(vals):
         out = []
         seen = set()
         for x in vals or []:
-            t = str(x).strip()
+            t = str(x).strip().strip('"\'')
             if not t:
                 continue
             k = t.lower()
@@ -317,25 +348,55 @@ def _normalize_authors_payload(raw):
         return []
 
     if isinstance(raw, list):
+        # Нормальный кейс: массив готовых имён.
+        joined = ", ".join(str(x) for x in raw)
+        stripped = joined.strip()
+        # Битый кейс из БД: массив — это по факту разорванный по запятым
+        # dict-literal вида
+        #   ["{Xin Su: /search/...Su%2C+X", " Jia Wei: /search/...", " Chun Ouyang: ...}"]
+        # или
+        #   ["{Paul Kobialka: null", " Andrea Pferscher: null", ... "}"]
+        # Признак: склеенная строка начинается с "{" и заканчивается "}",
+        # а в сегментах есть "ключ: значение".
+        if stripped.startswith('{') and stripped.endswith('}'):
+            names = _authors_from_dictlike_string(stripped)
+            if names:
+                return clean_list(names)
         return clean_list(raw)
 
     if isinstance(raw, dict):
+        # Частый кейс: авторы лежат прямо в ключах dict.
+        keys = [k for k in raw.keys() if isinstance(k, str) and k.strip()]
+        if keys:
+            return clean_list(keys)
         for key in ('list', 'LIST', 'authors', 'Authors'):
             v = raw.get(key)
             if isinstance(v, list):
                 return clean_list(v)
-        keys = [k for k in raw.keys() if isinstance(k, str) and k.strip()]
-        return clean_list(keys)
+        return []
 
     if isinstance(raw, str):
         t = raw.strip()
         if not t:
             return []
+
+        # JSON-строка объекта/массива.
         if (t.startswith('{') and t.endswith('}')) or (t.startswith('[') and t.endswith(']')):
             try:
                 return _normalize_authors_payload(json.loads(t))
             except Exception:
                 pass
+            # fallback для python-literal вида {'A': 1, 'B': 1}
+            try:
+                return _normalize_authors_payload(ast.literal_eval(t))
+            except Exception:
+                pass
+            # fallback для dict-like без кавычек ключей:
+            #   "{Xin Su: /search/...Su%2C+X, Jia Wei: ...}"
+            names = _authors_from_dictlike_string(t)
+            if names:
+                return clean_list(names)
+
         parts = [x.strip() for x in t.replace(';', ',').split(',')]
         return clean_list(parts)
 
@@ -787,15 +848,115 @@ async def trigger_process(limit: int = 50):
     return {"ok": True, **res}
 
 
+# Разрешённые поля сортировки: alias -> SQL-выражение
+_ARTICLES_SORT_MAP = {
+    "date": "p.date_sub",
+    "title": "p.title",
+    "category": "p.category",
+    "source": "p.source",
+    "score": "p.relevance_score",
+    "relevant": "p.is_relevant",
+    "review": "(r.article_id IS NOT NULL)",
+    "quarantine": "COALESCE(q.active, FALSE)",
+    "processed": "p.processed_at",
+    "id": "p.id",
+}
+
+
 @app.get("/api/articles")
-async def list_articles(page: int = 1, per_page: int = 20, only_relevant: bool = False):
+async def list_articles(
+    page: int = 1,
+    per_page: int = 20,
+    only_relevant: bool = False,
+    # --- кастомные фильтры по всем полям ---
+    q: str | None = None,                 # общий поиск: title + abstract + authors
+    title: str | None = None,             # подстрока в названии
+    author: str | None = None,            # подстрока в авторах
+    tag: str | None = None,               # подстрока в тегах
+    category: str | None = None,          # точное совпадение категории
+    source: str | None = None,            # точное совпадение источника
+    relevant: str | None = None,          # yes|no|any
+    has_review: str | None = None,        # yes|no|any
+    quarantine: str | None = None,        # yes|no|any
+    score_min: float | None = None,
+    score_max: float | None = None,
+    date_from: str | None = None,         # YYYY-MM-DD
+    date_to: str | None = None,           # YYYY-MM-DD
+    sort: str = "date",
+    order: str = "desc",
+):
     page = max(1, page)
     per_page = min(50, max(1, per_page))
     offset = (page - 1) * per_page
-    where = "WHERE p.is_relevant = TRUE" if only_relevant else ""
+
+    conds: list[str] = []
+    args: list = []
+
+    def add(expr_tmpl: str, value):
+        args.append(value)
+        conds.append(expr_tmpl.format(n=len(args)))
+
+    if only_relevant:
+        conds.append("p.is_relevant = TRUE")
+
+    if q:
+        add(
+            "(p.title ILIKE '%'||${n}||'%' OR p.abstract ILIKE '%'||${n}||'%' "
+            "OR p.authors::text ILIKE '%'||${n}||'%')",
+            q.strip(),
+        )
+    if title:
+        add("p.title ILIKE '%'||${n}||'%'", title.strip())
+    if author:
+        add("p.authors::text ILIKE '%'||${n}||'%'", author.strip())
+    if tag:
+        add("array_to_string(COALESCE(p.tags, '{{}}'), ',') ILIKE '%'||${n}||'%'", tag.strip())
+    if category:
+        add("p.category = ${n}", category.strip())
+    if source:
+        add("p.source = ${n}", source.strip())
+
+    def tri(val, expr_true, expr_false):
+        v = (val or "any").strip().lower()
+        if v in ("yes", "true", "1"):
+            conds.append(expr_true)
+        elif v in ("no", "false", "0"):
+            conds.append(expr_false)
+
+    tri(relevant, "p.is_relevant = TRUE", "COALESCE(p.is_relevant, FALSE) = FALSE")
+    tri(has_review, "r.article_id IS NOT NULL", "r.article_id IS NULL")
+    tri(quarantine, "COALESCE(q.active, FALSE) = TRUE", "COALESCE(q.active, FALSE) = FALSE")
+
+    if score_min is not None:
+        add("p.relevance_score >= ${n}", float(score_min))
+    if score_max is not None:
+        add("p.relevance_score <= ${n}", float(score_max))
+    if date_from:
+        try:
+            add("p.date_sub >= ${n}", _date.fromisoformat(date_from.strip()))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            add("p.date_sub <= ${n}", _date.fromisoformat(date_to.strip()))
+        except ValueError:
+            pass
+
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+    sort_expr = _ARTICLES_SORT_MAP.get((sort or "date").lower(), "p.date_sub")
+    order_dir = "ASC" if (order or "desc").lower() == "asc" else "DESC"
+    order_by = f"{sort_expr} {order_dir} NULLS LAST, p.id DESC"
+
+    base_join = """
+        FROM process_mining.papers_metadata p
+        LEFT JOIN process_mining.reviews r ON r.article_id = p.id
+        LEFT JOIN process_mining.ui_article_quarantine q ON q.article_id = p.id
+    """
+
     async with pool.acquire() as con:
         total = await con.fetchval(
-            f"SELECT count(*) FROM process_mining.papers_metadata p {where}")
+            f"SELECT count(*) {base_join} {where}", *args)
         rows = await con.fetch(f"""
             SELECT p.id, p.source, p.title, p.date_sub, p.url_article,
                    p.category, p.relevance_score, p.is_relevant,
@@ -806,18 +967,34 @@ async def list_articles(page: int = 1, per_page: int = 20, only_relevant: bool =
                      ELSE p.url_article
                    END AS display_url,
                    COALESCE(q.active, FALSE) AS quarantine_active
-            FROM process_mining.papers_metadata p
-            LEFT JOIN process_mining.reviews r ON r.article_id = p.id
-            LEFT JOIN process_mining.ui_article_quarantine q ON q.article_id = p.id
+            {base_join}
             {where}
-            ORDER BY p.date_sub DESC NULLS LAST, p.id DESC
-            LIMIT $1 OFFSET $2
-        """, per_page, offset)
+            ORDER BY {order_by}
+            LIMIT ${len(args)+1} OFFSET ${len(args)+2}
+        """, *args, per_page, offset)
+
     return {
         "ok": True,
         "page": page, "per_page": per_page,
         "total": total, "pages": (total + per_page - 1) // per_page,
         "articles": [dict(r) for r in rows],
+    }
+
+
+@app.get("/api/articles/filters")
+async def articles_filter_options():
+    """Справочник значений для селектов фильтра (категории, источники)."""
+    async with pool.acquire() as con:
+        cats = await con.fetch(
+            "SELECT DISTINCT category FROM process_mining.papers_metadata "
+            "WHERE category IS NOT NULL AND category <> '' ORDER BY 1")
+        srcs = await con.fetch(
+            "SELECT DISTINCT source FROM process_mining.papers_metadata "
+            "WHERE source IS NOT NULL AND source <> '' ORDER BY 1")
+    return {
+        "ok": True,
+        "categories": [r["category"] for r in cats],
+        "sources": [r["source"] for r in srcs],
     }
 
 

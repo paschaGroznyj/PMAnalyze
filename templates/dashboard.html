@@ -111,6 +111,21 @@
   /* ARTICLES TABLE */
   .articles{margin-top:14px}
   .tbl-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:12px}
+  .tbl-head-actions{display:flex; align-items:center; gap:14px}
+  .fbtn{font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+    border:2px solid var(--ink); background:#fff; padding:7px 14px; cursor:pointer; transition:all .08s}
+  .fbtn:hover{background:var(--peach)}
+  .fbtn.primary{background:var(--orange); color:#fff}
+  .fbtn.primary:hover{box-shadow:3px 3px 0 var(--ink)}
+  .flt-panel{display:none; border:2px solid var(--ink); background:#fff; padding:16px 18px; margin-bottom:14px}
+  .flt-panel.on{display:block}
+  .flt-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px 16px}
+  .flt-f{display:flex; flex-direction:column; gap:5px; font-family:'Space Mono',monospace;
+    font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:#6b6055}
+  .flt-f input, .flt-f select{border:2px solid var(--ink); background:#fff; padding:8px 9px;
+    font-family:'Archivo',sans-serif; font-size:13px; color:var(--ink)}
+  .flt-actions{display:flex; align-items:center; gap:10px; margin-top:16px; flex-wrap:wrap}
+  .flt-hint{font-size:10px; color:#6b6055; letter-spacing:.06em}
   .filter{font-size:11px; letter-spacing:.1em; display:flex; align-items:center; gap:8px; cursor:pointer}
   .filter input{width:16px; height:16px; accent-color:var(--orange); cursor:pointer}
   #tbl-count{font-size:11px; color:#6b6055}
@@ -354,8 +369,93 @@
       <label class="filter mono">
         <input type="checkbox" id="only-rel"> только релевантные
       </label>
-      <span class="mono" id="tbl-count">—</span>
+      <div class="tbl-head-actions">
+        <span class="mono" id="tbl-count">—</span>
+        <button class="fbtn mono" id="flt-toggle">Фильтры ▾</button>
+      </div>
     </div>
+
+    <div class="flt-panel" id="flt-panel">
+      <div class="flt-grid">
+        <label class="flt-f">Поиск (назв./аннот./авторы)
+          <input type="text" id="f-q" placeholder="ключевые слова">
+        </label>
+        <label class="flt-f">Название
+          <input type="text" id="f-title" placeholder="подстрока">
+        </label>
+        <label class="flt-f">Автор
+          <input type="text" id="f-author" placeholder="фамилия/имя">
+        </label>
+        <label class="flt-f">Тег
+          <input type="text" id="f-tag" placeholder="подстрока в тегах">
+        </label>
+        <label class="flt-f">Категория
+          <select id="f-category"><option value="">— любая —</option></select>
+        </label>
+        <label class="flt-f">Источник
+          <select id="f-source"><option value="">— любой —</option></select>
+        </label>
+        <label class="flt-f">Релевантность
+          <select id="f-relevant">
+            <option value="any">— любая —</option>
+            <option value="yes">только да</option>
+            <option value="no">только нет</option>
+          </select>
+        </label>
+        <label class="flt-f">Ревью
+          <select id="f-review">
+            <option value="any">— любое —</option>
+            <option value="yes">есть</option>
+            <option value="no">нет</option>
+          </select>
+        </label>
+        <label class="flt-f">Карантин
+          <select id="f-quar">
+            <option value="any">— любой —</option>
+            <option value="yes">в карантине</option>
+            <option value="no">не в карантине</option>
+          </select>
+        </label>
+        <label class="flt-f">Score от
+          <input type="number" id="f-smin" step="0.05" min="0" max="1" placeholder="0.00">
+        </label>
+        <label class="flt-f">Score до
+          <input type="number" id="f-smax" step="0.05" min="0" max="1" placeholder="1.00">
+        </label>
+        <label class="flt-f">Дата с
+          <input type="date" id="f-dfrom">
+        </label>
+        <label class="flt-f">Дата по
+          <input type="date" id="f-dto">
+        </label>
+        <label class="flt-f">Сортировка
+          <select id="f-sort">
+            <option value="date">Дата</option>
+            <option value="title">Название</option>
+            <option value="category">Категория</option>
+            <option value="source">Источник</option>
+            <option value="score">Score</option>
+            <option value="relevant">Релевантность</option>
+            <option value="review">Ревью</option>
+            <option value="quarantine">Карантин</option>
+            <option value="processed">Обработано</option>
+            <option value="id">ID</option>
+          </select>
+        </label>
+        <label class="flt-f">Порядок
+          <select id="f-order">
+            <option value="desc">по убыв.</option>
+            <option value="asc">по возр.</option>
+          </select>
+        </label>
+      </div>
+      <div class="flt-actions">
+        <button class="fbtn primary mono" id="flt-apply">Применить</button>
+        <button class="fbtn mono" id="flt-reset">Сбросить</button>
+        <span class="mono flt-hint" id="flt-active"></span>
+      </div>
+    </div>
+
     <div class="tbl-scroll">
       <table id="art-table">
         <thead>
@@ -827,10 +927,36 @@ async function toggleQuarantine(articleId, nextActive){
   }
 }
 
+function buildArticlesQuery(){
+  const p = new URLSearchParams();
+  p.set("page", artPage);
+  p.set("per_page", 20);
+  p.set("only_relevant", onlyRel);
+  const put = (key, id)=>{ const v=($("#"+id)?.value||"").trim(); if(v) p.set(key, v); };
+  const putSel = (key, id)=>{ const v=$("#"+id)?.value; if(v && v!=="any" && v!=="") p.set(key, v); };
+  put("q","f-q"); put("title","f-title"); put("author","f-author"); put("tag","f-tag");
+  putSel("category","f-category"); putSel("source","f-source");
+  putSel("relevant","f-relevant"); putSel("has_review","f-review"); putSel("quarantine","f-quar");
+  put("score_min","f-smin"); put("score_max","f-smax");
+  put("date_from","f-dfrom"); put("date_to","f-dto");
+  const sort=$("#f-sort")?.value; if(sort) p.set("sort", sort);
+  const order=$("#f-order")?.value; if(order) p.set("order", order);
+  return p.toString();
+}
+
+function countActiveFilters(){
+  const ids=["f-q","f-title","f-author","f-tag","f-smin","f-smax","f-dfrom","f-dto"];
+  const sels=["f-category","f-source","f-relevant","f-review","f-quar"];
+  let n=0;
+  ids.forEach(id=>{ if(($("#"+id)?.value||"").trim()) n++; });
+  sels.forEach(id=>{ const v=$("#"+id)?.value; if(v && v!=="any" && v!=="") n++; });
+  return n;
+}
+
 async function loadArticles(page){
   artPage = page || artPage;
   try{
-    const url = `/api/articles?page=${artPage}&per_page=20&only_relevant=${onlyRel}`;
+    const url = `/api/articles?${buildArticlesQuery()}`;
     const r = await fetch(url); const d = await r.json();
     if(!d.ok) throw new Error("articles not ok");
     artPages = d.pages || 1;
@@ -903,6 +1029,47 @@ function drawPager(){
 }
 
 $("#only-rel").onchange = e=>{ onlyRel = e.target.checked; loadArticles(1); };
+
+// ---------------- ARTICLES FILTERS ----------------
+async function loadFilterOptions(){
+  try{
+    const r = await fetch("/api/articles/filters"); const d = await r.json();
+    if(!d.ok) return;
+    const cat = $("#f-category"), src = $("#f-source");
+    (d.categories||[]).forEach(c=>{
+      const o=document.createElement("option"); o.value=c; o.textContent=c; cat.appendChild(o);
+    });
+    (d.sources||[]).forEach(s=>{
+      const o=document.createElement("option"); o.value=s; o.textContent=s; src.appendChild(o);
+    });
+  }catch(e){ console.error("filters load", e); }
+}
+
+function refreshFilterHint(){
+  const n = countActiveFilters();
+  $("#flt-active").textContent = n ? `активных фильтров: ${n}` : "";
+  $("#flt-toggle").textContent = n ? `Фильтры (${n}) ▾` : "Фильтры ▾";
+}
+
+$("#flt-toggle").onclick = ()=> $("#flt-panel").classList.toggle("on");
+
+$("#flt-apply").onclick = ()=>{ refreshFilterHint(); loadArticles(1); };
+
+$("#flt-reset").onclick = ()=>{
+  ["f-q","f-title","f-author","f-tag","f-smin","f-smax","f-dfrom","f-dto"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; });
+  ["f-category","f-source"].forEach(id=>{ const el=$("#"+id); if(el) el.value=""; });
+  ["f-relevant","f-review","f-quar"].forEach(id=>{ const el=$("#"+id); if(el) el.value="any"; });
+  $("#f-sort").value="date"; $("#f-order").value="desc";
+  refreshFilterHint(); loadArticles(1);
+};
+
+// Enter в текстовых полях = применить
+["f-q","f-title","f-author","f-tag","f-smin","f-smax"].forEach(id=>{
+  const el=$("#"+id);
+  if(el) el.addEventListener("keydown", ev=>{ if(ev.key==="Enter"){ refreshFilterHint(); loadArticles(1); } });
+});
+
+loadFilterOptions();
 
 // ---------------- ARTICLE MODAL ----------------
 async function openArticle(id){

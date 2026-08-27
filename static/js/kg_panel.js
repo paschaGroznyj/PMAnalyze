@@ -3,13 +3,12 @@
   const toast = (msg)=>{ if(typeof window.toast === "function") window.toast(msg); };
 
   const btnStart = byId("btn-kg-start");
-  const btnStop = byId("btn-kg-stop");
   const btnRefresh = byId("btn-kg-refresh");
   const runInfo = byId("kg-run-info");
   const graphInfo = byId("kg-graph-info");
   const graphEl = byId("kg-canvas");
 
-  if(!btnStart || !btnStop || !graphEl) return;
+  if(!btnStart || !graphEl) return;
 
   let network = null;
   let nodesDS = null;
@@ -31,14 +30,16 @@
     const rem = Number(state.remaining||0);
 
     if(running){
-      btnStart.textContent = `🕸 граф ${done}/${total}`;
-      btnStart.disabled = true;
-      btnStop.disabled = false;
+      btnStart.classList.add("running");
+      btnStart.innerHTML = `🕸 граф ${done}/${total} <span class="kg-stop-ico" aria-hidden="true"><span class="sq"></span></span>`;
+      btnStart.disabled = false;
+      btnStart.title = "Остановить генерацию графа";
       if(runInfo) runInfo.textContent = `в работе: ${done}/${total} · осталось: ${rem}`;
     }else{
+      btnStart.classList.remove("running");
       btnStart.textContent = "🕸 создание графа";
       btnStart.disabled = false;
-      btnStop.disabled = true;
+      btnStart.title = "Запустить генерацию графа";
       if(runInfo){
         if(state.finished_at){
           const extra = state.last_error ? ` · ошибка: ${state.last_error}` : "";
@@ -298,6 +299,17 @@
 
   btnStart.onclick = async ()=>{
     try{
+      const st = await fetchJson("/api/kg/run/status");
+      if(st.ok && st.running){
+        await fetchJson("/api/kg/run/stop", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+        });
+        toast("Остановка запрошена");
+        await refreshStatus();
+        return;
+      }
+
       const d = await fetchJson("/api/kg/run/start", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -310,19 +322,9 @@
       }
       await refreshStatus();
       await refreshGraph();
-    }catch(_){ toast("Ошибка запуска генерации графа"); }
+    }catch(_){ toast("Ошибка управления генерацией графа"); }
   };
 
-  btnStop.onclick = async ()=>{
-    try{
-      await fetchJson("/api/kg/run/stop", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-      });
-      toast("Остановка запрошена");
-      await refreshStatus();
-    }catch(_){ toast("Ошибка остановки генерации графа"); }
-  };
 
   refreshStatus();
   refreshGraph();

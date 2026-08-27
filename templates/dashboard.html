@@ -314,6 +314,12 @@
   .kg-info{font-size:10px; color:#6b6055; letter-spacing:.04em}
   .btn.danger{background:#fff; color:var(--ink); border-color:var(--ink)}
   .btn.danger:hover{box-shadow:4px 4px 0 #e77a57}
+  .btn.kg-toggle{display:inline-flex; align-items:center; gap:8px}
+  .btn.kg-toggle .kg-stop-ico{display:none; width:18px; height:18px; border:2px solid var(--ink); border-radius:999px; align-items:center; justify-content:center; background:#fff}
+  .btn.kg-toggle .kg-stop-ico .sq{width:8px; height:8px; background:var(--orange); border:1px solid var(--ink)}
+  .btn.kg-toggle.running{background:#FFF1E9; border-color:var(--ink)}
+  .btn.kg-toggle.running .kg-stop-ico{display:inline-flex}
+  .btn.kg-toggle.running:hover{box-shadow:4px 4px 0 #e77a57}
   #kg-canvas{height:520px; border:2px solid var(--ink); background:#fff}
   #kg-panel{margin-top:20px; margin-bottom:14px}
 
@@ -331,8 +337,7 @@
     <div class="actions">
       <button class="btn" id="btn-parser">⚙ запустить парсер</button>
       <button class="btn" id="btn-reviews">✎ запустить ревью</button>
-      <button class="btn" id="btn-kg-start">🕸 создание графа</button>
-      <button class="btn danger" id="btn-kg-stop" disabled>■ остановить граф</button>
+      <button class="btn kg-toggle" id="btn-kg-start">🕸 создание графа</button>
       <button class="btn accent" id="btn-digest">✉ дайджест на почту</button>
       <div class="mono" id="kg-run-info" style="font-size:10px;color:#c9beac">готов к запуску</div>
     </div>

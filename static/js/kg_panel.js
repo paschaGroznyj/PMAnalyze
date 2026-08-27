@@ -107,7 +107,8 @@
       }else if(lastHybridState.summary){
         const meta = `найдено ${found} · в модель ${used}/${maxCtx}`;
         searchSummary.style.display = "block";
-        searchSummary.innerHTML = `<div class="mono" style="font-size:10px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-саммари · ${meta}</div>${mdToHtml(lastHybridState.summary)}`;
+        searchSummary.innerHTML = renderSummaryHtml(lastHybridState.summary, (lastHybridState.items || []), meta);
+        wireSummaryRefLinks();
       }else if(lastHybridState.summary_error){
         searchSummary.style.display = "block";
         searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Не удалось: ${esc(lastHybridState.summary_error)}</span>`;
@@ -179,6 +180,56 @@
       .replace(/\n/g, "<br>")
       .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
       .replace(/`(.+?)`/g, "<code>$1</code>");
+  }
+
+  function renderSummaryHtml(summary, items, meta){
+    const md = String(summary || "");
+    const html = mdToHtml(md);
+    const refs = [];
+    const re = /\[(\d+)\]/g;
+    let m;
+    while((m = re.exec(md)) !== null){
+      const idx = Number(m[1]);
+      if(Number.isFinite(idx) && idx >= 1 && idx <= (items?.length || 0) && !refs.includes(idx)) refs.push(idx);
+    }
+
+    const title = `<div class="mono" style="font-size:12px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-саммари · ${esc(meta || "")}</div>`;
+
+    if(!refs.length) return `${title}${html}`;
+
+    const links = refs.map((idx)=>{
+      const it = items[idx - 1] || {};
+      const nodeId = String(it.node_id || "");
+      const label = esc(it.title || `${it.kind === "wiki" ? "Wiki" : "Knowledge"} #${it.id || idx}`);
+      const kind = it.kind === "wiki" ? "wiki" : "knowledge";
+      return `<a href="#" class="kg-ref-link" data-ref-index="${idx}" data-node-id="${esc(nodeId)}" data-kind="${kind}">[${idx}] ${label}</a>`;
+    }).join(" · ");
+
+    return `${title}${html}<div class="mono" style="margin-top:10px;font-size:12px;color:#6b6055">Источники: ${links}</div>`;
+  }
+
+  function wireSummaryRefLinks(){
+    if(!searchSummary) return;
+    searchSummary.querySelectorAll(".kg-ref-link").forEach((a)=>{
+      a.addEventListener("click", (e)=>{
+        e.preventDefault();
+        const nodeId = a.getAttribute("data-node-id") || "";
+        if(!nodeId) return;
+
+        try{
+          network?.focus(nodeId, {
+            scale: 1.18,
+            animation: {duration: 700, easingFunction: "easeInOutQuad"}
+          });
+          nodesDS?.update([{id: nodeId, borderWidth: 4}]);
+          setTimeout(()=>{
+            try{ nodesDS?.update([{id: nodeId, borderWidth: 2}]); }catch(_){ }
+          }, 1200);
+        }catch(_){ }
+
+        setTimeout(()=> openCard(nodeId), 240);
+      });
+    });
   }
 
   function ensureCardModal(){
@@ -469,6 +520,7 @@
       used,
       max_ctx: maxCtx,
       node_ids: serverNodeIds,
+      items: d.items || [],
       summary: d.summary || null,
       summary_error: d.summary_error || null,
       ts: Date.now(),
@@ -494,7 +546,8 @@
     }
     if(d.summary){
       const meta = `найдено ${found} · в модель ${used}/${maxCtx}`;
-      searchSummary.innerHTML = `<div class="mono" style="font-size:10px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-саммари · ${meta}</div>${mdToHtml(d.summary)}`;
+      searchSummary.innerHTML = renderSummaryHtml(d.summary, (d.items || []), meta);
+      wireSummaryRefLinks();
     }else if(d.summary_error){
       searchSummary.innerHTML = `<span class="mono" style="font-size:11px;color:#9a8f82">Не удалось: ${esc(d.summary_error)}</span>`;
     }else if(found === 0){
@@ -747,6 +800,8 @@
       btnSearchToggle.textContent = open ? "Поиск по графу ▾" : "Поиск по графу ▴";
     };
   }
+
+  restoreHybridStateFromSession();
 
   if(depthEl && depthVal){
     const syncDepth = ()=>{

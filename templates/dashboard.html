@@ -160,13 +160,15 @@
   .filter input{width:16px; height:16px; accent-color:var(--orange); cursor:pointer}
   #tbl-count{font-size:11px; color:#6b6055}
   .tbl-scroll{overflow-x:auto}
-  table{width:100%; border-collapse:collapse; font-size:13px}
+  table{width:100%; border-collapse:collapse; font-size:13px; table-layout:fixed}
   thead th{font-family:'Space Mono',monospace; font-size:10px; letter-spacing:.12em;
     text-transform:uppercase; text-align:left; padding:10px 12px; border-bottom:2px solid var(--ink);
     background:var(--yellow)}
   thead th.c{text-align:center}
   tbody td{padding:11px 12px; border-bottom:1px solid rgba(30,26,22,.14); vertical-align:middle}
   tbody td.c{text-align:center; font-family:'Space Mono',monospace; font-size:12px}
+  /* фиксированная ширина колонок — чтобы при смене фильтров таблица не прыгала */
+  tbody td.t-title, tbody td.t-cat{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   tbody tr{cursor:pointer; transition:background .1s}
   tbody tr:hover{background:var(--peach)}
   tbody tr.quarantined{background:rgba(255,90,31,.10)}
@@ -480,6 +482,15 @@
 
     <div class="tbl-scroll">
       <table id="art-table">
+        <colgroup>
+          <col style="width:48px">
+          <col>
+          <col style="width:210px">
+          <col style="width:80px">
+          <col style="width:72px">
+          <col style="width:82px">
+          <col style="width:110px">
+        </colgroup>
         <thead>
           <tr>
             <th class="c sortable" data-sort="quarantine">Q<span class="sarr"></span></th>

@@ -169,15 +169,14 @@ async def lifespan(app: FastAPI):
             ADD COLUMN IF NOT EXISTS source_url TEXT
         """)
         await con.execute("""
-            UPDATE process_mining.wiki_pages w
-            SET source_url = u.url
-            FROM LATERAL (
-                SELECT elem AS url
-                FROM jsonb_array_elements_text(COALESCE(w.links, '[]'::jsonb)) AS elem
+            UPDATE process_mining.wiki_pages
+            SET source_url = (
+                SELECT elem
+                FROM jsonb_array_elements_text(COALESCE(links, '[]'::jsonb)) AS elem
                 WHERE elem ~ '^https?://'
                 LIMIT 1
-            ) AS u
-            WHERE COALESCE(w.source_url, '') = ''
+            )
+            WHERE COALESCE(source_url, '') = ''
         """)
 
         await con.execute("""

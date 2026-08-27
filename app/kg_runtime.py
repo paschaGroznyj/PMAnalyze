@@ -357,6 +357,25 @@ class KGRunManager:
                 if su.startswith("http://") or su.startswith("https://"):
                     source_url = su
                     break
+
+            # Fallback: если в wiki.links нет валидного URL, пробуем взять source
+            # из metadata_knowledge связанных knowledge-узлов (source_ids).
+            src_ids = self._coerce_id_list(row["source_ids"])
+            if not source_url and src_ids:
+                krow = await con.fetchrow(
+                    """
+                    SELECT metadata_knowledge->>'source' AS src
+                    FROM process_mining.knowledge
+                    WHERE id = ANY($1::int[])
+                      AND (metadata_knowledge->>'source') ~ '^https?://'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    src_ids,
+                )
+                if krow and krow.get("src"):
+                    source_url = str(krow["src"]).strip()
+
             return {
                 "ok": True,
                 "kind": "wiki",

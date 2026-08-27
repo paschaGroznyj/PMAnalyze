@@ -287,10 +287,15 @@
       const foot = byId("kg-card-foot");
       foot.innerHTML = "";
 
-      if(d.kind === "wiki" && d.source_url){
+      const sourceUrl = (
+        (typeof d.source_url === "string" && /^https?:\/\//i.test(d.source_url.trim()) && d.source_url.trim())
+        || (Array.isArray(d.links) ? (d.links.map(x=>String(x||"").trim()).find(x=>/^https?:\/\//i.test(x)) || "") : "")
+      );
+
+      if(d.kind === "wiki" && sourceUrl){
         const a = document.createElement("a");
         a.className = "btn";
-        a.href = d.source_url;
+        a.href = sourceUrl;
         a.target = "_blank";
         a.rel = "noopener noreferrer";
         a.textContent = "открыть источник";

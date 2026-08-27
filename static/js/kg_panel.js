@@ -16,6 +16,7 @@
   const searchLlm = byId("kg-search-llm");
   const depthEl = byId("kg-depth");
   const depthVal = byId("kg-depth-val");
+  const chunksCount = byId("kg-chunks-count");
   const searchHint = byId("kg-search-hint");
   const searchSummary = byId("kg-search-summary");
 
@@ -369,51 +370,78 @@
     }
   }
 
-  function applyRealtimeFilter(){
+  function updateChunksBadge(n, depth){
+    if(!chunksCount) return;
+    const num = Number(n||0);
+    const d = Number(depth||depthEl?.value||0);
+    chunksCount.textContent = `чанков в модель: ${num} · depth ${d}`;
+  }
+
+  function applyDepthRealtime(runSummary){
     const q = (searchQ?.value || "").trim();
     if(!q || q.length < 2){
       lastMatches = [];
-      if(searchHint) searchHint.textContent = "Подсветка работает при вводе. Глубина применяется по кнопке лупы.";
+      lastSelection = new Set();
+      window.__kg_graph_context = "";
+      updateChunksBadge(0, depthEl?.value || 0);
+      if(searchHint) searchHint.textContent = "Подсветка работает при вводе. Глубина применяется в реальном времени при движении ползунка.";
       resetVisual();
+      if(searchSummary && !runSummary){
+        searchSummary.style.display = "none";
+        searchSummary.innerHTML = "";
+      }
       return;
     }
-    const matches = findMatches(q);
-    lastMatches = matches;
-    applySelection(matches, null, "live");
-    if(searchHint) searchHint.textContent = matches.length
-      ? `Совпадений: ${matches.length}. Нажмите лупу для применения глубины связей.`
-      : "Совпадений нет.";
-  }
 
-  function applyDepthByButton(){
-    const q = (searchQ?.value || "").trim();
-    if(!q || q.length < 2){
-      toast("Введите запрос (мин. 2 символа)");
-      return;
-    }
     const depth = Math.max(1, Math.min(5, Number(depthEl?.value || 2)));
     const matches = lastMatches.length ? lastMatches : findMatches(q);
+    lastMatches = matches;
+
     if(!matches.length){
-      toast("Совпадений не найдено");
+      updateChunksBadge(0, depth);
+      window.__kg_graph_context = "";
+      applySelection([], null, "live");
+      if(searchHint) searchHint.textContent = "Совпадений нет.";
+      if(searchSummary && !runSummary){
+        searchSummary.style.display = "none";
+        searchSummary.innerHTML = "";
+      }
       return;
     }
+
     const dmap = bfsDepth(matches, depth);
     applySelection(matches, dmap, "depth");
 
     const rows = buildContextFromSelection(dmap);
     window.__kg_graph_context = rows.join("\n");
+    updateChunksBadge(rows.length, depth);
+
     if(searchCtx && searchCtx.checked){
-      if(searchHint) searchHint.textContent = `Глубина ${depth} применена. В контекст добавлено: ${rows.length} фрагментов.`;
+      if(searchHint) searchHint.textContent = `Совпадений: ${matches.length}. Глубина ${depth}. В контексте: ${rows.length} чанков.`;
     }else{
-      if(searchHint) searchHint.textContent = `Глубина ${depth} применена. Фрагменты: ${rows.length} (контекст выключен).`;
+      if(searchHint) searchHint.textContent = `Совпадений: ${matches.length}. Глубина ${depth}. Потенциально: ${rows.length} чанков (контекст выключен).`;
     }
 
-    if(searchLlm && searchLlm.checked){
+    if(runSummary && searchLlm && searchLlm.checked){
       runKgSummary(q, rows);
-    }else if(searchSummary){
+    }else if(searchSummary && !runSummary){
       searchSummary.style.display = "none";
       searchSummary.innerHTML = "";
     }
+  }
+
+  function applyRealtimeFilter(){
+    const q = (searchQ?.value || "").trim();
+    if(!q || q.length < 2){
+      lastMatches = [];
+      updateChunksBadge(0, depthEl?.value || 0);
+      if(searchHint) searchHint.textContent = "Подсветка работает при вводе. Глубина применяется в реальном времени при движении ползунка.";
+      resetVisual();
+      return;
+    }
+    const matches = findMatches(q);
+    lastMatches = matches;
+    applyDepthRealtime(false);
   }
 
   let jellyTimer = null;
@@ -586,7 +614,10 @@
   }
 
   if(depthEl && depthVal){
-    const syncDepth = ()=> depthVal.textContent = String(depthEl.value || "2");
+    const syncDepth = ()=>{
+      depthVal.textContent = String(depthEl.value || "2");
+      applyDepthRealtime(false);
+    };
     depthEl.addEventListener("input", syncDepth);
     syncDepth();
   }
@@ -596,13 +627,13 @@
     searchQ.addEventListener("keydown", (e)=>{
       if(e.key === "Enter"){
         e.preventDefault();
-        applyDepthByButton();
+        applyDepthRealtime(true);
       }
     });
   }
 
   if(searchGo){
-    searchGo.onclick = applyDepthByButton;
+    searchGo.onclick = ()=> applyDepthRealtime(true);
   }
 
   if(searchCtx){

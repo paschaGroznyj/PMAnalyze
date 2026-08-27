@@ -919,15 +919,33 @@ class PMParserService:
         }
         headers = {
             "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
             "Origin": "https://ieeexplore.ieee.org",
-            "Referer": "https://ieeexplore.ieee.org/search/searchresult.jsp?queryText=process%20mining",
-            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://ieeexplore.ieee.org/search/searchresult.jsp?queryText=process%20mining&highlight=true&returnType=SEARCH&matchPubs=true&rowsPerPage=25&openAccess=true&returnFacets=ALL&ranges=2026_2026_Year",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "X-Requested-With": "XMLHttpRequest",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
         out: list[PMArticle] = []
         try:
             async with httpx.AsyncClient(timeout=self.timeout_http, follow_redirects=True) as client:
+                # IEEE режет прямой POST (418) без bootstrap cookies.
+                # Делаем предварительный GET страницы поиска в той же сессии.
+                search_url = (
+                    "https://ieeexplore.ieee.org/search/searchresult.jsp"
+                    "?queryText=process%20mining&highlight=true&returnType=SEARCH"
+                    "&matchPubs=true&rowsPerPage=25&openAccess=true"
+                    "&returnFacets=ALL&ranges=2026_2026_Year"
+                )
+                await client.get(search_url, headers={"User-Agent": headers.get("User-Agent", "Mozilla/5.0")})
+
                 r = await client.post("https://ieeexplore.ieee.org/rest/search", headers=headers, json=payload)
                 r.raise_for_status()
+                ctype = (r.headers.get("content-type") or "").lower()
+                if "application/json" not in ctype:
+                    return []
                 data = r.json() or {}
         except Exception:
             return []

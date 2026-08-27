@@ -311,8 +311,10 @@
   .search-empty{font-family:'Space Mono',monospace; font-size:12px; color:#9a8f82; padding:8px 0}
 
   /* ===== KNOWLEDGE GRAPH PANEL ===== */
-  .kg-head{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap}
-  .kg-actions{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .kg-head{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    border-bottom:2px solid var(--ink); padding-bottom:10px; margin-bottom:14px}
+  .kg-head h3{border-bottom:none; padding-bottom:0; margin-bottom:0}
+  .kg-actions{display:flex; align-items:center; gap:18px; flex-wrap:wrap}
   .kg-refresh{display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:2px solid var(--ink); border-radius:10px; background:#fff; cursor:pointer; transition:transform .15s ease, background .15s ease}
   .kg-refresh:hover{background:#F7EFE8; transform:rotate(25deg)}
   .kg-refresh:active{transform:scale(.96)}

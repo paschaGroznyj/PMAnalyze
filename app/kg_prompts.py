@@ -147,6 +147,73 @@ def build_relation_inference_prompt(nodes_json: str) -> str:
 
 
 # ============================================================
+# 2b. CROSS-LINK — связи нового узла с кандидатами из графа
+# ============================================================
+def build_cross_link_prompt(new_node_json: str, candidates_json: str) -> str:
+    """Pairwise-инференс: один НОВЫЙ узел против набора КАНДИДАТОВ из графа.
+
+    В отличие от build_relation_inference_prompt (общий пул узлов), тут LLM
+    обязан оценить связь между узлом A (новый) и КАЖДЫМ кандидатом B по
+    отдельности. Это не даёт модели распыляться на intra-article связи и
+    подсвечивает именно cross-article пары. Направление — от/к A, id брать
+    строго из входа.
+
+    Результат -> кандидаты на INSERT в process_mining.entity_relations
+    (только new <-> candidate).
+    """
+    types = ", ".join(f'"{t}"' for t in RELATION_TYPES)
+    return f"""Ты — построитель графа знаний Process Mining.
+Дан ОДИН новый узел A и список КАНДИДАТОВ B из существующего графа.
+Оцени связь A с КАЖДЫМ кандидатом B по отдельности. Кандидаты уже отобраны
+по семантической близости — но близость ≠ обязательно осмысленное ребро.
+
+## НОВЫЙ УЗЕЛ A (id + текст):
+{new_node_json}
+
+## КАНДИДАТЫ B (id + текст) — каждого рассмотри отдельно:
+{candidates_json}
+
+## ПРАВИЛА:
+1. Каждое ребро связывает ТОЛЬКО A с одним из B. Связи B<->B не строй.
+   source_id/target_id — строго id из входа (A и один из B).
+2. Направление важно (см. семантику). Ребро направленное source -> target.
+3. relation_type выбирай РОВНО из словаря — изобретать ЗАПРЕЩЕНО:
+   [{types}]
+   Семантика:
+   - relates_to     — общая тематическая связь (fallback, если нет точнее)
+   - extends        — target развивает/расширяет source
+   - based_on       — source построен на основе target
+   - uses           — source использует target (метод/инструмент)
+   - includes       — source включает target как часть
+   - alternative_to — source и target — взаимозаменяемые альтернативы
+   - describes      — source описывает target
+   - evaluates      — source оценивает/тестирует target
+   - determines     — source определяет/задаёт target
+   - summarizes     — source суммирует target
+4. Если для кандидата B осмысленной связи с A НЕТ — просто НЕ включай его.
+   Не выдумывай ребро ради заполнения. Дубли одинаковых тем — это alternative_to
+   или relates_to, а не пропуск.
+5. relevance_score 0.0-1.0 — уверенность в связи. importance 0.0-1.0 — ценность
+   для навигации по графу.
+6. Один и тот же факт в A и B (та же концепция из разных статей) — валидная
+   связь alternative_to / relates_to, обязательно её отрази.
+
+## СТРОГО JSON (без markdown-обёртки):
+{{
+  "relations": [
+    {{
+      "source_id": 28,
+      "target_id": 1,
+      "relation_type": "alternative_to",
+      "relevance_score": 0.9,
+      "importance": 0.8,
+      "reasoning": "Оба узла описывают OCPM из разных статей."
+    }}
+  ]
+}}"""
+
+
+# ============================================================
 # 3. SYNTHESIZE — сборка wiki-страницы из группы узлов
 # ============================================================
 def build_wiki_synthesis_prompt(topic: str, nodes_json: str) -> str:

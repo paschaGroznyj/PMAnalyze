@@ -184,7 +184,7 @@
 
   function renderSummaryHtml(summary, items, meta){
     const md = String(summary || "");
-    const html = mdToHtml(md);
+    let html = mdToHtml(md);
     const refs = [];
     const re = /\[(\d+)\]/g;
     let m;
@@ -195,15 +195,26 @@
 
     const title = `<div class="mono" style="font-size:12px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-саммари · ${esc(meta || "")}</div>`;
 
+    // Внедряем ссылки ПРЯМО в текст саммари: [n] -> кликабельный [n]
+    html = html.replace(/\[(\d+)\]/g, (_all, g1)=>{
+      const idx = Number(g1);
+      if(!Number.isFinite(idx) || idx < 1 || idx > (items?.length || 0)) return `[${esc(String(g1))}]`;
+      const it = items[idx - 1] || {};
+      const nodeId = String(it.node_id || "");
+      const kind = it.kind === "wiki" ? "wiki" : "knowledge";
+      if(!nodeId) return `[${idx}]`;
+      return `<a href="#" class="kg-ref-link" data-ref-index="${idx}" data-node-id="${esc(nodeId)}" data-kind="${kind}">[${idx}]</a>`;
+    });
+
     if(!refs.length) return `${title}${html}`;
 
     const links = refs.map((idx)=>{
       const it = items[idx - 1] || {};
       const nodeId = String(it.node_id || "");
-      const label = esc(it.title || `${it.kind === "wiki" ? "Wiki" : "Knowledge"} #${it.id || idx}`);
       const kind = it.kind === "wiki" ? "wiki" : "knowledge";
-      return `<a href="#" class="kg-ref-link" data-ref-index="${idx}" data-node-id="${esc(nodeId)}" data-kind="${kind}">[${idx}] ${label}</a>`;
-    }).join(" · ");
+      if(!nodeId) return `[${idx}]`;
+      return `<a href="#" class="kg-ref-link" data-ref-index="${idx}" data-node-id="${esc(nodeId)}" data-kind="${kind}">[${idx}]</a>`;
+    }).join(" ");
 
     return `${title}${html}<div class="mono" style="margin-top:10px;font-size:12px;color:#6b6055">Источники: ${links}</div>`;
   }
@@ -219,15 +230,16 @@
         try{
           network?.focus(nodeId, {
             scale: 1.18,
-            animation: {duration: 700, easingFunction: "easeInOutQuad"}
+            animation: {duration: 900, easingFunction: "easeInOutQuad"}
           });
           nodesDS?.update([{id: nodeId, borderWidth: 4}]);
           setTimeout(()=>{
             try{ nodesDS?.update([{id: nodeId, borderWidth: 2}]); }catch(_){ }
-          }, 1200);
+          }, 1400);
         }catch(_){ }
 
-        setTimeout(()=> openCard(nodeId), 240);
+        // Даем анимации дойти до узла перед открытием карточки
+        setTimeout(()=> openCard(nodeId), 980);
       });
     });
   }

@@ -347,7 +347,7 @@
       toast("Введите запрос (мин. 2 символа)");
       return;
     }
-    const depth = Math.max(1, Math.min(5, Number(depthEl?.value || 2)));
+    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || 2)));
     const wantSummary = !!(searchLlm && searchLlm.checked);
 
     if(searchSummary){
@@ -436,7 +436,7 @@
       return;
     }
 
-    const depth = Math.max(1, Math.min(5, Number(depthEl?.value || 2)));
+    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || 2)));
     const matches = lastMatches.length ? lastMatches : findMatches(q);
     lastMatches = matches;
 

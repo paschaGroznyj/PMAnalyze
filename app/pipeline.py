@@ -199,6 +199,34 @@ class PMAnalyzePipeline:
             ext = re.sub(r"v[0-9]+$", "", ext)
         return ext
 
+    @staticmethod
+    def _is_valid_http_url(v: str) -> bool:
+        s = (v or "").strip()
+        if not s or s in {"-1", "null", "none"}:
+            return False
+        try:
+            p = urlparse(s)
+            if p.scheme not in {"http", "https"}:
+                return False
+            if not p.netloc:
+                return False
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def _pick_preferred_source_url(cls, url_article: str, pdf_url: str) -> str:
+        """Берём валидный URL из двух полей papers_metadata: url_article/pdf_url.
+        Предпочтение PDF при его валидности, иначе страница статьи.
+        """
+        ua = (url_article or "").strip()
+        pu = (pdf_url or "").strip()
+        if cls._is_valid_http_url(pu):
+            return pu
+        if cls._is_valid_http_url(ua):
+            return ua
+        return ""
+
     # ---------------- lifecycle ----------------
     async def start(self):
         if self._task is None:
@@ -680,7 +708,9 @@ class PMAnalyzePipeline:
         source = (art.get("source") or "").strip().lower()
 
         # Ссылка в промпте должна указывать на реальный PDF-документ.
-        source_url = pdf_url or url_article
+        source_url = self._pick_preferred_source_url(url_article, pdf_url)
+        if not source_url:
+            source_url = pdf_url or url_article
         original_source_url = source_url
 
         page_text = ""
@@ -997,9 +1027,10 @@ class PMAnalyzePipeline:
         pdf_url = (art.get("pdf_url") or "").strip()
         source = (art.get("source") or "").strip().lower()
 
-        source_url = pdf_url or url_article
+        source_url = self._pick_preferred_source_url(url_article, pdf_url)
+        if not source_url:
+            source_url = pdf_url or url_article
         original_source_url = source_url
-        page_text = ""
 
         if source.startswith("yandex_disk:"):
             page_text = await self._download_pdf_text(pdf_url)

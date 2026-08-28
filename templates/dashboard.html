@@ -509,6 +509,10 @@
 .pkb-step-title{font-weight:800;font-size:14px;margin-bottom:4px}
 .pkb-step-desc{color:var(--ink);opacity:.7;font-size:12px;line-height:1.5;margin-bottom:12px}
 .pkb-key-status{margin-top:10px;font-size:12px}
+.pkb-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.pkb-open-graph-btn{margin-left:auto;border:2px solid var(--ink);background:var(--paper);color:var(--ink);font-weight:700;padding:8px 14px;cursor:pointer;transition:transform .08s,box-shadow .08s;min-height:36px}
+.pkb-open-graph-btn:hover{transform:translate(-2px,-2px);box-shadow:3px 3px 0 var(--orange);background:var(--peach)}
+@media(max-width:500px){.pkb-head{gap:8px}.pkb-open-graph-btn{margin-left:0;width:100%;min-height:40px;padding:10px 14px}}
 .pkb-key-status.ok{color:#1e7d46}
 .pkb-key-status.err{color:var(--orange)}
 .pkb-import-row{display:flex;gap:10px;flex-wrap:wrap}
@@ -548,8 +552,8 @@
 .pkb-card-btn-title{font-weight:800;font-size:14px}
 .pkb-card-btn-desc{font-size:12px;color:var(--ink);opacity:.7;line-height:1.45}
 /* блок с ключом */
-.pkb-secret-box{display:flex;gap:10px;align-items:center;background:#fff;border:2px solid var(--ink);padding:12px;margin-bottom:14px}
-.pkb-secret{flex:1;font-size:14px;font-weight:700;word-break:break-all;user-select:all;color:var(--ink)}
+.pkb-secret-box{display:flex;gap:10px;align-items:center;background:#fff;border:2px solid var(--ink);padding:12px;margin-bottom:14px;min-width:0}
+.pkb-secret{flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;font-weight:700;letter-spacing:.5px;white-space:nowrap;overflow-x:auto;user-select:all;color:var(--ink)}
 .pkb-confirm{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-bottom:18px}
 .pkb-confirm input{width:18px;height:18px;cursor:pointer;accent-color:var(--orange)}
 .pkb-modal-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
@@ -569,11 +573,59 @@
   .pkb-modal-close{min-width:40px;min-height:40px}
   .pkb-card-btn{padding:14px}
   .pkb-secret-box{flex-direction:column;align-items:stretch}
+  .pkb-secret{white-space:normal;word-break:break-word;overflow-x:visible}
   .pkb-secret-box .pkb-btn{width:100%}
   .pkb-modal-actions{flex-direction:column-reverse}
   .pkb-modal-actions .pkb-btn{width:100%}
   .pkb-progress-head{flex-direction:column;align-items:flex-start;gap:4px}
 }
+
+  /* PKB-GRAPH-CSS */
+  .pkb-graph-wrap{margin-top:18px; border-top:2px dashed var(--ink); padding-top:16px}
+  .pkb-kg-head{display:flex; flex-direction:column; gap:12px}
+  .pkb-kg-search-row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .pkb-kg-input{flex:1 1 240px}
+  .pkb-kg-llm{display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap}
+  .pkb-kg-depth-row{display:flex; align-items:center; gap:12px}
+  .pkb-kg-depth-row .kg-depth-range{flex:1 1 auto}
+  .pkb-kg-canvas{position:relative; height:460px; margin-top:14px;
+    border:2px solid var(--ink); background:var(--paper); box-shadow:5px 5px 0 var(--ink); overflow:hidden}
+  .pkb-kg-card{margin-top:12px; border:2px solid var(--ink); background:var(--paper);
+    box-shadow:4px 4px 0 var(--ink); padding:14px 16px}
+  .pkb-kg-card h4{margin:0 0 8px; font-size:15px}
+  .pkb-kg-card .pkb-kg-card-text{font-size:13px; line-height:1.5; white-space:pre-wrap}
+  .pkb-kg-card .pkb-kg-neigh{margin-top:10px; display:flex; flex-wrap:wrap; gap:6px}
+  .pkb-kg-card .pkb-kg-neigh button{font-size:11px; padding:4px 8px; border:2px solid var(--ink);
+    background:var(--sky); cursor:pointer; box-shadow:2px 2px 0 var(--ink)}
+  .pkb-kg-card .pkb-kg-neigh button:hover{transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--orange)}
+  @media(max-width:920px){
+    .pkb-kg-canvas{height:380px}
+    .pkb-kg-search-row{gap:8px}
+    .pkb-kg-input{flex:1 1 100%}
+  }
+  @media(max-width:500px){
+    .pkb-kg-canvas{height:320px; box-shadow:3px 3px 0 var(--ink)}
+    .pkb-kg-search-row{flex-direction:column; align-items:stretch}
+    .pkb-kg-llm{justify-content:flex-start}
+    .kg-search-go, #pkb-kg-search-go{width:40px; height:40px; align-self:flex-end}
+    #pkb-kg-refresh{min-height:40px; padding:8px 14px}
+    .pkb-kg-depth-row .kg-depth-range{min-height:24px}
+    .pkb-kg-card .pkb-kg-neigh button{min-height:36px; padding:8px 10px}
+    #pkb-kg-load-full{width:100px; height:100px}
+  }
+
+  /* PKB-DEPTH-SLIDER */
+  #pkb-kg-depth{-webkit-appearance:none; appearance:none; height:3px; background:#1E1A16; outline:none; flex:1 1 auto}
+  #pkb-kg-depth::-webkit-slider-thumb{-webkit-appearance:none; appearance:none; width:16px; height:16px; border-radius:50%; background:#FF5A1F; border:2px solid #1E1A16; cursor:pointer}
+  #pkb-kg-depth::-moz-range-track{height:3px; background:#1E1A16; border:none}
+  #pkb-kg-depth::-moz-range-thumb{width:16px; height:16px; border-radius:50%; background:#FF5A1F; border:2px solid #1E1A16; cursor:pointer}
+  .pkb-kg-depth-row .kg-depth-label{font-size:10px; color:#6b6055; letter-spacing:.06em; text-transform:uppercase}
+  .pkb-kg-depth-row .kg-depth-badge{font-size:12px; min-width:18px; text-align:center}
+  @media(max-width:500px){
+    #pkb-kg-depth{width:100%; min-height:24px}
+    #pkb-kg-depth::-webkit-slider-thumb{width:22px; height:22px}
+    #pkb-kg-depth::-moz-range-thumb{width:22px; height:22px}
+  }
 </style>
 </head>
 <body>
@@ -687,6 +739,7 @@
     <div class="pkb-head">
       <h3>Личная база знаний</h3>
       <span class="mono pkb-hint" id="pkb-hint">документы -> узлы графа знаний</span>
+      <button class="pkb-btn pkb-open-graph-btn" id="pkb-open-graph" type="button">Открыть мой граф</button>
     </div>
 
     <div class="pkb-body">
@@ -709,6 +762,46 @@
         <div class="pkb-progress-file mono" id="pkb-current-file"></div>
         <div class="pkb-progress-stats mono" id="pkb-progress-stats"></div>
         <div class="pkb-errors" id="pkb-errors"></div>
+      </div>
+
+      <!-- PKB GRAPH BLOCK -->
+      <div class="pkb-graph-wrap" id="pkb-graph-wrap" hidden>
+        <div class="kg-head pkb-kg-head">
+          <div class="kg-info">
+            <span class="mono" id="pkb-kg-counts">узлов: 0 · связей: 0</span>
+            <button class="btn pkb-kg-refresh" id="pkb-kg-refresh" type="button">Обновить</button>
+          </div>
+          <div class="kg-search-row pkb-kg-search-row">
+            <input class="pkb-input pkb-kg-input" id="pkb-kg-query" type="text"
+                   placeholder="Семантический поиск по вашему графу…" autocomplete="off">
+            <label class="search-llm pkb-kg-llm">
+              <input type="checkbox" id="pkb-kg-want-summary"> LLM-саммари
+            </label>
+            <button class="kg-search-go" id="pkb-kg-search-go" type="button" aria-label="Искать">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line></svg>
+            </button>
+          </div>
+          <div class="kg-depth-row pkb-kg-depth-row">
+            <span class="mono kg-depth-label">Глубина связей</span>
+            <input type="range" min="0" max="4" value="1" step="1" id="pkb-kg-depth" class="kg-depth-range">
+            <span class="mono kg-depth-badge" id="pkb-kg-depth-badge">1</span>
+          </div>
+          <div class="kg-search-summary" id="pkb-kg-summary" hidden></div>
+        </div>
+        <div class="kg-canvas pkb-kg-canvas" id="pkb-kg-canvas">
+          <button class="kg-load-full" id="pkb-kg-load-full" title="Показать граф целиком" aria-label="Показать граф">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v11"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <rect x="4" y="16" width="16" height="5" rx="1"></rect>
+            </svg>
+            <span>Показать граф</span>
+          </button>
+          <div class="kg-loader" id="pkb-kg-loader" hidden>
+            <div class="kg-ring"></div><div class="kg-dots"><i></i><i></i><i></i></div>
+          </div>
+        </div>
+        <div class="kg-card pkb-kg-card" id="pkb-kg-card" hidden></div>
       </div>
     </div>
   </div>

@@ -958,7 +958,16 @@ def _read_docx(path: Path) -> str:
         from docx import Document  # type: ignore
     except Exception as e:
         raise RuntimeError(f"python-docx недоступен: {e}")
-    d = Document(str(path))
+    try:
+        if path.stat().st_size < 4000:
+            import zipfile as _zf
+            if not _zf.is_zipfile(str(path)):
+                raise RuntimeError("файл не является валидным .docx (пустой или битый архив)")
+        d = Document(str(path))
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"не удалось открыть .docx (возможно старый .doc или повреждён): {type(e).__name__}")
     return "\n".join((p.text or "").strip() for p in d.paragraphs if (p.text or "").strip())
 
 
@@ -977,11 +986,35 @@ def _read_pdf(path: Path) -> str:
     return "\n".join(pages)
 
 
+def _pkb_fix_zip_name(info) -> str:
+    """Чинит имена из zip: если флаг UTF-8 не выставлен, zipfile декодит как cp437.
+    Возвращаем корректную строку (пробуем cp866/utf-8 для кириллицы)."""
+    name = info.filename
+    try:
+        # бит 0x800 = имя уже в UTF-8, чинить не нужно
+        if getattr(info, "flag_bits", 0) & 0x800:
+            return name
+        raw = name.encode("cp437", errors="replace")
+        for enc in ("cp866", "utf-8", "cp1251"):
+            try:
+                dec = raw.decode(enc)
+                # эвристика: если получили осмысленную кириллицу/латиницу без replacement-символов
+                if "\ufffd" not in dec:
+                    return dec
+            except Exception:
+                continue
+        return raw.decode("utf-8", errors="ignore") or name
+    except Exception:
+        return name
+
+
 def _safe_extract_zip(zip_path: Path, out_dir: Path):
     with zipfile.ZipFile(zip_path, "r") as zf:
         for info in zf.infolist():
+            fixed_name = _pkb_fix_zip_name(info)
+            info.filename = fixed_name  # чтобы дальнейшая логика видела нормальное имя
             # анти zip-slip
-            target = (out_dir / info.filename).resolve()
+            target = (out_dir / fixed_name).resolve()
             if not str(target).startswith(str(out_dir.resolve())):
                 continue
             if info.is_dir():
@@ -1017,6 +1050,169 @@ _PRIVATE_KB_JOBS: dict[int, dict] = {}
 from app.kg_prompts import build_knowledge_extraction_prompt as _pkb_build_extract
 from app.kg_prompts import build_relation_inference_prompt as _pkb_build_rel
 from app.kg_prompts import RELATION_TYPES as _PKB_REL_TYPES
+from app.kg_prompts import build_cross_link_prompt as _pkb_build_cross
+import hashlib as _pkb_hashlib
+
+
+
+_PKB_CROSS_MIN_VEC_SIM = float(os.getenv("PKB_CROSS_MIN_VEC_SIM", "0.75"))
+_PKB_CROSS_TOP_K = int(os.getenv("PKB_CROSS_TOP_K", "8"))
+
+
+def _pkb_fname_hash(name: str) -> str:
+    """Хеш нормализованного имени документа для дедупа дублей."""
+    base = (name or "").strip().lower()
+    # берём только имя файла без пути
+    if "/" in base:
+        base = base.rsplit("/", 1)[-1]
+    if "\\" in base:
+        base = base.rsplit("\\", 1)[-1]
+    return _pkb_hashlib.md5(base.encode("utf-8", "ignore")).hexdigest()
+
+
+async def _pkb_cross_link(import_id: int, user_id: str, allowed_rel: set, job: dict) -> int:
+    """Глобальная фаза: межфайловые связи по всем узлам импорта.
+
+    Возвращает число созданных cross-рёбер. Никогда не бросает наружу —
+    ошибки складываются в job['errors'].
+    """
+    created = 0
+    try:
+        async with pool.acquire() as con:
+            nrows = await con.fetch(
+                "SELECT n.id, n.file_id, n.text_knowledge, "
+                "COALESCE(f.file_name, '') AS file_name "
+                "FROM process_mining.user_private_kb_graph_nodes n "
+                "LEFT JOIN process_mining.user_private_kb_files f ON f.id = n.file_id "
+                "WHERE n.user_id=$1 AND n.import_id=$2 ORDER BY n.id",
+                user_id, import_id,
+            )
+        nodes = [dict(r) for r in nrows]
+        if len(nodes) < 2:
+            return 0
+
+        # дедуп документов по хешу имени: effective_doc = хеш имени файла.
+        # узлы с одинаковым doc-хешем считаются ОДНИМ документом.
+        for nd in nodes:
+            nd["doc_hash"] = _pkb_fname_hash(nd.get("file_name") or ("fid:" + str(nd.get("file_id"))))
+
+        texts = [((nd.get("text_knowledge") or "").strip())[:30000] for nd in nodes]
+
+        # батч-эмбеддинги всех узлов одним запросом (как в search-эндпоинте)
+        import httpx as _hx
+        from app.search import EMBED_BASE as _EB, EMBED_KEY as _EK, EMBED_MODEL as _EM
+        async with _hx.AsyncClient(timeout=120) as cl:
+            resp = await cl.post(
+                _EB + "/embeddings",
+                headers={"Authorization": "Bearer " + _EK, "Content-Type": "application/json"},
+                json={"model": _EM, "input": texts},
+            )
+            resp.raise_for_status()
+            emb_data = resp.json()["data"]
+        vecs = {int(nodes[i]["id"]): emb_data[i]["embedding"] for i in range(len(nodes))}
+
+        by_id = {int(nd["id"]): nd for nd in nodes}
+
+        # уже существующие рёбра импорта -> для дедупа
+        async with pool.acquire() as con:
+            erows = await con.fetch(
+                "SELECT source_node_id, target_node_id, relation_type "
+                "FROM process_mining.user_private_kb_graph_edges "
+                "WHERE user_id=$1 AND import_id=$2",
+                user_id, import_id,
+            )
+        seen = set()
+        for e in erows:
+            seen.add((int(e["source_node_id"]), int(e["target_node_id"]), e["relation_type"]))
+
+        for nd in nodes:
+            new_id = int(nd["id"])
+            new_text = (nd.get("text_knowledge") or "").strip()
+            if len(new_text) < 20:
+                continue
+            qv = vecs.get(new_id) or []
+            if not qv:
+                continue
+
+            # кандидаты из ДРУГИХ документов (иной doc_hash) с косинусом >= порога
+            scored = []
+            for other in nodes:
+                oid = int(other["id"])
+                if oid == new_id:
+                    continue
+                if other["doc_hash"] == nd["doc_hash"]:
+                    continue  # тот же документ (или дубль по имени) -> пропускаем
+                sim = _pkb_cos(qv, vecs.get(oid) or [])
+                if sim >= _PKB_CROSS_MIN_VEC_SIM:
+                    scored.append((oid, sim))
+            if not scored:
+                continue
+            scored.sort(key=lambda x: x[1], reverse=True)
+            cand_ids = [oid for oid, _ in scored[:_PKB_CROSS_TOP_K]]
+            cand_nodes = []
+            for cid in cand_ids:
+                ct = (by_id[cid].get("text_knowledge") or "").strip()
+                if len(ct) >= 20:
+                    cand_nodes.append({"id": cid, "text_knowledge": ct})
+            if not cand_nodes:
+                continue
+            cand_set = {int(c["id"]) for c in cand_nodes}
+
+            cross_prompt = _pkb_build_cross(
+                json.dumps({"id": new_id, "text_knowledge": new_text}, ensure_ascii=False),
+                json.dumps(cand_nodes, ensure_ascii=False),
+            )
+            try:
+                cross_raw = await pipeline._llm(pipeline.settings.review_model, cross_prompt, max_tokens=1800)
+                cross_data = pipeline._extract_json(cross_raw) or {}
+            except Exception as e:
+                job.setdefault("errors", []).append({"file": None, "error": "cross_llm: " + str(e)[:400]})
+                continue
+            rel_cross = cross_data.get("relations") if isinstance(cross_data, dict) else []
+            if not isinstance(rel_cross, list):
+                continue
+
+            for rr in rel_cross[:60]:
+                if not isinstance(rr, dict):
+                    continue
+                try:
+                    sid = int(rr.get("source_id"))
+                    tid = int(rr.get("target_id"))
+                except Exception:
+                    continue
+                if sid == tid:
+                    continue
+                # строго A(new) <-> B(candidate)
+                if not ((sid == new_id and tid in cand_set) or (tid == new_id and sid in cand_set)):
+                    continue
+                rtype = str(rr.get("relation_type") or "relates_to").strip()
+                if rtype not in allowed_rel:
+                    rtype = "relates_to"
+                try:
+                    rscore = max(0.0, min(1.0, float(rr.get("relevance_score", 0.5) or 0.5)))
+                except Exception:
+                    rscore = 0.5
+                try:
+                    rimp = max(0.0, min(1.0, float(rr.get("importance", 0.5) or 0.5)))
+                except Exception:
+                    rimp = 0.5
+                key = (sid, tid, rtype)
+                if key in seen:
+                    continue
+                seen.add(key)
+                async with pool.acquire() as con:
+                    await con.execute(
+                        "INSERT INTO process_mining.user_private_kb_graph_edges("
+                        "user_id, import_id, source_node_id, target_node_id, "
+                        "relation_type, relevance_score, importance) "
+                        "VALUES($1,$2,$3,$4,$5,$6,$7)",
+                        user_id, import_id, sid, tid, rtype, rscore, rimp,
+                    )
+                created += 1
+                job["edges_created"] = job.get("edges_created", 0) + 1
+    except Exception as e:
+        job.setdefault("errors", []).append({"file": None, "error": "cross_link: " + str(e)[:600]})
+    return created
 
 
 async def _pkb_process_import(import_id: int, user_id: str, drive_url: str):
@@ -1190,6 +1386,16 @@ async def _pkb_process_import(import_id: int, user_id: str, drive_url: str):
                         import_id, files_parsed, total_nodes, total_edges,
                     )
 
+            # --- ГЛОБАЛЬНАЯ ФАЗА: межфайловые связи (cross-file linking) ---
+            job["status"] = "linking"
+            async with pool.acquire() as con:
+                await con.execute(
+                    "UPDATE process_mining.user_private_kb_imports SET status='linking', current_file=NULL, updated_at=NOW() WHERE id=$1",
+                    import_id,
+                )
+            cross_edges = await _pkb_cross_link(import_id, user_id, allowed_rel, job)
+            total_edges += cross_edges
+
             async with pool.acquire() as con:
                 await con.execute(
                     "UPDATE process_mining.user_private_kb_imports "
@@ -1359,6 +1565,299 @@ async def private_kb_stats(request: Request):
             user_id,
         )
     return {"ok": True, "user_id": user_id, "has_secret": bool(key_exists), **dict(imports or {})}
+
+
+# ==== PKB GRAPH ENDPOINTS ====
+import math as _pkb_math
+
+
+def _pkb_cos(a: list, b: list) -> float:
+    if not a or not b:
+        return 0.0
+    s = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        s += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return s / (_pkb_math.sqrt(na) * _pkb_math.sqrt(nb))
+
+
+async def _pkb_load_graph(user_id: str) -> dict:
+    """Все узлы/рёбра всех импортов юзера -> payload для vis-network."""
+    async with pool.acquire() as con:
+        nrows = await con.fetch(
+            """
+            SELECT id, label, text_knowledge, importance, tags, metadata, import_id
+            FROM process_mining.user_private_kb_graph_nodes
+            WHERE user_id=$1
+            ORDER BY id
+            """,
+            user_id,
+        )
+        erows = await con.fetch(
+            """
+            SELECT source_node_id, target_node_id, relation_type, relevance_score, importance
+            FROM process_mining.user_private_kb_graph_edges
+            WHERE user_id=$1
+            """,
+            user_id,
+        )
+    nodes = []
+    for r in nrows:
+        text = (r["text_knowledge"] or "").strip()
+        label = (r["label"] or text[:80] or ("Node " + str(r["id"])))
+        try:
+            tags = json.loads(r["tags"]) if isinstance(r["tags"], str) else (r["tags"] or [])
+        except Exception:
+            tags = []
+        nodes.append({
+            "id": "p" + str(r["id"]),
+            "raw_id": int(r["id"]),
+            "label": label if len(label) <= 42 else label[:42] + "…",
+            "full_label": label,
+            "text": text,
+            "importance": float(r["importance"] or 0.5),
+            "tags": tags,
+            "import_id": int(r["import_id"]) if r["import_id"] is not None else None,
+        })
+    edges = []
+    for r in erows:
+        edges.append({
+            "from": "p" + str(r["source_node_id"]),
+            "to": "p" + str(r["target_node_id"]),
+            "relation": r["relation_type"] or "relates_to",
+            "relevance": float(r["relevance_score"] or 0.5),
+            "importance": float(r["importance"] or 0.5),
+        })
+    return {"ok": True, "nodes": nodes, "edges": edges,
+            "counts": {"nodes": len(nodes), "edges": len(edges)}}
+
+
+@app.get("/api/private-kb/graph/full")
+async def private_kb_graph_full(request: Request):
+    user_id = _require_user_id(request)
+    return await _pkb_load_graph(user_id)
+
+
+@app.get("/api/private-kb/graph/card")
+async def private_kb_graph_card(request: Request, node_id: str):
+    user_id = _require_user_id(request)
+    raw = node_id[1:] if node_id.startswith("p") else node_id
+    try:
+        rid = int(raw)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad node_id"}, status_code=400)
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            """
+            SELECT n.id, n.label, n.text_knowledge, n.importance, n.tags, n.metadata,
+                   n.import_id, n.created_at
+            FROM process_mining.user_private_kb_graph_nodes n
+            WHERE n.user_id=$1 AND n.id=$2
+            """,
+            user_id, rid,
+        )
+        if not row:
+            return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+        neigh = await con.fetch(
+            """
+            SELECT CASE WHEN e.source_node_id=$2 THEN e.target_node_id ELSE e.source_node_id END AS nid,
+                   e.relation_type, e.relevance_score
+            FROM process_mining.user_private_kb_graph_edges e
+            WHERE e.user_id=$1 AND (e.source_node_id=$2 OR e.target_node_id=$2)
+            """,
+            user_id, rid,
+        )
+        neigh_ids = [r["nid"] for r in neigh]
+        labels = {}
+        if neigh_ids:
+            lr = await con.fetch(
+                "SELECT id, label, text_knowledge FROM process_mining.user_private_kb_graph_nodes "
+                "WHERE user_id=$1 AND id = ANY($2::bigint[])",
+                user_id, neigh_ids,
+            )
+            for r in lr:
+                labels[r["id"]] = (r["label"] or (r["text_knowledge"] or "")[:60])
+    try:
+        tags = json.loads(row["tags"]) if isinstance(row["tags"], str) else (row["tags"] or [])
+    except Exception:
+        tags = []
+    try:
+        md = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {})
+    except Exception:
+        md = {}
+    neighbors = []
+    for r in neigh:
+        neighbors.append({
+            "node_id": "p" + str(r["nid"]),
+            "label": labels.get(r["nid"], "Node " + str(r["nid"])),
+            "relation": r["relation_type"],
+            "relevance": float(r["relevance_score"] or 0.5),
+        })
+    return {
+        "ok": True,
+        "node_id": "p" + str(row["id"]),
+        "label": row["label"],
+        "text": row["text_knowledge"],
+        "importance": float(row["importance"] or 0.5),
+        "tags": tags,
+        "metadata": md,
+        "import_id": int(row["import_id"]) if row["import_id"] is not None else None,
+        "neighbors": neighbors,
+    }
+
+
+class PkbGraphSearchIn(BaseModel):
+    query: str = ""
+    depth: int = 1
+    want_summary: bool = False
+    limit: int = 25
+
+
+@app.post("/api/private-kb/graph/search")
+async def private_kb_graph_search(body: PkbGraphSearchIn, request: Request):
+    """Семантический поиск по узлам персонального графа + BFS по глубине + LLM-саммари.
+
+    Эмбеддинги узлов PKB не хранятся -> считаем on-the-fly (узлов немного).
+    """
+    from app.search import embed_text as _pkb_embed, llm_summary_kg as _pkb_llm_sum
+
+    user_id = _require_user_id(request)
+    q = (body.query or "").strip()
+    if not q:
+        return JSONResponse({"ok": False, "error": "empty query"}, status_code=400)
+    depth = max(0, min(4, int(body.depth or 1)))
+    limit = max(1, min(80, int(body.limit or 25)))
+
+    async with pool.acquire() as con:
+        nrows = await con.fetch(
+            "SELECT id, label, text_knowledge, importance FROM process_mining.user_private_kb_graph_nodes "
+            "WHERE user_id=$1 ORDER BY id",
+            user_id,
+        )
+        erows = await con.fetch(
+            "SELECT source_node_id AS s, target_node_id AS t, relation_type FROM process_mining.user_private_kb_graph_edges "
+            "WHERE user_id=$1",
+            user_id,
+        )
+    if not nrows:
+        return {"ok": True, "query": q, "found": 0, "seeds": [], "nodes": [], "edges": [],
+                "summary": None, "summary_error": None}
+
+    # embeddings: запрос + узлы
+    try:
+        qvec = await _pkb_embed(q)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "embed_query: " + str(e)}, status_code=500)
+
+    texts = [((r["text_knowledge"] or r["label"] or "").strip()) for r in nrows]
+    node_vecs = {}
+    try:
+        # батч-эмбеддинги узлов одним запросом
+        import httpx as _pkb_httpx
+        from app.search import EMBED_BASE as _EB, EMBED_KEY as _EK, EMBED_MODEL as _EM
+        async with _pkb_httpx.AsyncClient(timeout=90) as cl:
+            r = await cl.post(
+                _EB + "/embeddings",
+                headers={"Authorization": "Bearer " + _EK, "Content-Type": "application/json"},
+                json={"model": _EM, "input": texts},
+            )
+            r.raise_for_status()
+            data = r.json()["data"]
+        for i, r0 in enumerate(nrows):
+            node_vecs[int(r0["id"])] = data[i]["embedding"]
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "embed_nodes: " + str(e)}, status_code=500)
+
+    scored = []
+    for r0 in nrows:
+        nid = int(r0["id"])
+        sim = _pkb_cos(qvec, node_vecs.get(nid, []))
+        scored.append((nid, sim))
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    # сиды: топ по косинусу с порогом
+    seeds = [nid for nid, sim in scored if sim >= 0.30][:limit]
+    if not seeds:
+        seeds = [nid for nid, _ in scored[:min(8, len(scored))]]
+
+    # adjacency для BFS
+    adj = {}
+    for e in erows:
+        adj.setdefault(int(e["s"]), set()).add(int(e["t"]))
+        adj.setdefault(int(e["t"]), set()).add(int(e["s"]))
+
+    selected = set(seeds)
+    frontier = set(seeds)
+    for _ in range(depth):
+        nxt = set()
+        for n in frontier:
+            for m in adj.get(n, ()):  # соседи
+                if m not in selected:
+                    nxt.add(m)
+        selected |= nxt
+        frontier = nxt
+        if not frontier:
+            break
+
+    sim_map = {nid: sim for nid, sim in scored}
+    by_id = {int(r["id"]): r for r in nrows}
+    out_nodes = []
+    for nid in selected:
+        r = by_id.get(nid)
+        if not r:
+            continue
+        text = (r["text_knowledge"] or "").strip()
+        label = r["label"] or text[:80]
+        out_nodes.append({
+            "id": "p" + str(nid),
+            "node_id": "p" + str(nid),
+            "raw_id": nid,
+            "label": label if len(label) <= 42 else label[:42] + "…",
+            "full_label": label,
+            "text": text,
+            "importance": float(r["importance"] or 0.5),
+            "score": round(float(sim_map.get(nid, 0.0)), 6),
+            "is_seed": nid in set(seeds),
+        })
+    out_nodes.sort(key=lambda x: x["score"], reverse=True)
+
+    sel = selected
+    out_edges = []
+    for e in erows:
+        sfrom = int(e["s"]); sto = int(e["t"])
+        if sfrom in sel and sto in sel:
+            out_edges.append({
+                "from": "p" + str(sfrom), "to": "p" + str(sto),
+                "relation": e["relation_type"] or "relates_to",
+            })
+
+    summary = None
+    summary_error = None
+    if body.want_summary and out_nodes:
+        try:
+            snippets = [{"kind": "knowledge", "title": n["full_label"], "content": n["text"]}
+                        for n in out_nodes[:12]]
+            summary, _tok = await _pkb_llm_sum(q, snippets)
+        except Exception as e:
+            summary_error = type(e).__name__ + ": " + str(e)
+
+    return {
+        "ok": True,
+        "query": q,
+        "depth": depth,
+        "found": len(seeds),
+        "seeds": ["p" + str(x) for x in seeds],
+        "nodes": out_nodes,
+        "edges": out_edges,
+        "counts": {"nodes": len(out_nodes), "edges": len(out_edges)},
+        "summary": summary,
+        "summary_error": summary_error,
+    }
 
 
 # ---------------- Local pipeline export ----------------

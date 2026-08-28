@@ -11,7 +11,10 @@ import httpx
 CLOUD_KEY = os.getenv("CLOUD_LLM_ACCESS_KEY", "")
 CLOUD_BASE = os.getenv("CLOUD_LLM_BASE", "https://foundation-models.api.cloud.ru/v1")
 EMBED_MODEL = os.getenv("PM_EMBED_MODEL", "Qwen/Qwen3-VL-Embedding-8B")
-EMBED_DIM = 4096
+EMBED_DIM = int(os.getenv("PM_EMBED_DIM", "4096"))
+# Отдельный OpenAI-совместимый клиент эмбеддингов; fallback на CLOUD-шлюз.
+EMBED_BASE = os.getenv("PM_EMBED_BASE", CLOUD_BASE)
+EMBED_KEY = os.getenv("PM_EMBED_KEY", CLOUD_KEY)
 LLM_MODEL = os.getenv("PM_SUMMARY_MODEL", "anthropic/claude-haiku-4.5")
 
 # Русскоязычный ts-конфиг: 'russian' покрывает и латиницу приемлемо для смешанного текста.
@@ -62,8 +65,8 @@ async def embed_text(text: str) -> list[float]:
         raise ValueError("empty text for embedding")
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(
-            f"{CLOUD_BASE}/embeddings",
-            headers={"Authorization": f"Bearer {CLOUD_KEY}", "Content-Type": "application/json"},
+            f"{EMBED_BASE}/embeddings",
+            headers={"Authorization": f"Bearer {EMBED_KEY}", "Content-Type": "application/json"},
             json={"model": EMBED_MODEL, "input": [text]},
         )
         r.raise_for_status()

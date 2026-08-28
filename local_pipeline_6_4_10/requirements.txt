@@ -1,0 +1,7 @@
+# Local Knowledge Graph notebook (offline 6.4.10)
+pandas>=2.0
+numpy>=1.24
+sentence-transformers>=2.6
+ipywidgets>=8.0
+pyvis>=0.3.2
+notebook>=7.0

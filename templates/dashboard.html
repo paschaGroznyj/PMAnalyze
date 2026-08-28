@@ -252,6 +252,7 @@
     .kpi{padding:14px 12px}
     .kpi .num{font-size:32px}
     .kg-refresh{width:36px; height:36px}
+    .kg-export{width:36px; height:36px}
     .btn.kg-toggle{min-height:44px; width:100%; justify-content:center; text-align:center}
     .btn.kg-toggle.running{padding-left:44px; padding-right:44px}
     .kg-search-row{gap:10px; align-items:stretch}
@@ -374,6 +375,10 @@
   .kg-refresh:hover{background:#F7EFE8; transform:rotate(25deg)}
   .kg-refresh:active{transform:scale(.96)}
   .kg-refresh svg{width:18px; height:18px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
+.kg-export{display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:2px solid var(--ink); border-radius:10px; background:#fff; cursor:pointer; transition:transform .15s ease, background .15s ease}
+  .kg-export:hover{background:#F7EFE8; transform:translateY(-1px)}
+  .kg-export:active{transform:scale(.96)}
+  .kg-export svg{width:18px; height:18px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
   .kg-load-full{position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); z-index:3;
     display:inline-flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;
     width:132px; height:132px; padding:0; border:2px solid var(--ink); border-radius:0; background:#fff; cursor:pointer;
@@ -600,6 +605,13 @@
             <polyline points="21 3 21 9 15 9"/>
           </svg>
         </button>
+        <button class="kg-export" id="btn-kg-export" title="Выгрузить локальный pipeline (zip)" aria-label="Выгрузить локальный pipeline">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3v10"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <rect x="4" y="16" width="16" height="5" rx="1"></rect>
+          </svg>
+        </button>
         <button class="fbtn mono" id="btn-kg-search-toggle" title="Показать поиск по графу">Поиск по графу ▾</button>
       </div>
     </div>
@@ -621,8 +633,8 @@
       </div>
       <div class="kg-depth-row">
         <span class="mono kg-depth-label">глубина связей</span>
-        <input type="range" id="kg-depth" min="0" max="5" step="1" value="2">
-        <span class="mono kg-depth-val" id="kg-depth-val">2</span>
+        <input type="range" id="kg-depth" min="0" max="5" step="1" value="1">
+        <span class="mono kg-depth-val" id="kg-depth-val">1</span>
         <span class="mono kg-chunks" id="kg-chunks-count">чанков в модель: 0</span>
       </div>
       <div class="kg-search-hint mono" id="kg-search-hint">Подсветка работает при вводе. Глубина применяется в реальном времени при движении ползунка.</div>

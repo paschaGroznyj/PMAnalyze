@@ -4,6 +4,7 @@
 
   const btnStart = byId("btn-kg-start");
   const btnRefresh = byId("btn-kg-refresh");
+  const btnExport = byId("btn-kg-export");
   const runInfo = byId("kg-run-info");
   const graphInfo = byId("kg-graph-info");
   const graphEl = byId("kg-canvas");
@@ -46,7 +47,7 @@
   let quickSearchSeq = 0;
   let lastSelection = new Set();
 
-  const MAX_CTX = 15; // лимит чанков, реально уходящих в модель
+  const MAX_CTX = 100; // лимит чанков, реально уходящих в модель
   const HYBRID_STATE_KEY = "kg_hybrid_state_v1";
   let lastHybridState = null;
 
@@ -66,8 +67,8 @@
     clearHybridState();
     if(searchQ) searchQ.value = "";
     if(searchLlm) searchLlm.checked = false;
-    if(depthEl) depthEl.value = "2";
-    if(depthVal) depthVal.textContent = "2";
+    if(depthEl) depthEl.value = "1";
+    if(depthVal) depthVal.textContent = "1";
     setSummaryButtonEnabled(false);
     updateSummaryToggleMeta(0,0,MAX_CTX);
     setSummaryHtml("");
@@ -78,7 +79,7 @@
     const qNow = String(searchQ?.value || "").trim();
     if(!qNow || qNow !== String(lastHybridState.q || "")) return false;
 
-    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || lastHybridState.depth || 2)));
+    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || lastHybridState.depth || 1)));
     const found = Number(lastHybridState.found || 0);
     const used = Number(lastHybridState.used || 0);
     const maxCtx = Number(lastHybridState.max_ctx || MAX_CTX);
@@ -112,7 +113,7 @@
     const qNow = String(searchQ?.value || "").trim();
     if(!qNow || qNow !== String(lastHybridState.q || "")) return false;
 
-    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || lastHybridState.depth || 2)));
+    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || lastHybridState.depth || 1)));
     const found = Number(lastHybridState.found || 0);
     const used = Number(lastHybridState.used || 0);
     const maxCtx = Number(lastHybridState.max_ctx || MAX_CTX);
@@ -223,6 +224,27 @@
     const d = await r.json();
     d.__status = r.status;
     return d;
+  }
+
+  async function downloadExportZip(mode){
+    const r = await fetch(`/api/local-pipeline/export?mode=${encodeURIComponent(mode || "sqlite_csv")}`);
+    if(!r.ok){
+      const t = await r.text().catch(()=>"");
+      throw new Error(t || `http_${r.status}`);
+    }
+    const blob = await r.blob();
+    let fileName = `local_pipeline_${mode || "sqlite_csv"}.zip`;
+    const cd = r.headers.get("content-disposition") || "";
+    const m = cd.match(/filename="?([^";]+)"?/i);
+    if(m && m[1]) fileName = m[1];
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = u;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u), 1200);
   }
 
   async function refreshStatus(){
@@ -382,24 +404,48 @@
         const nodeId = a.getAttribute("data-node-id") || "";
         if(!nodeId) return;
 
-        // Плавно скроллим к графу, затем фокусируем узел
-        try{ graphEl?.scrollIntoView({behavior:"smooth", block:"center"}); }catch(_){ }
+        // Ultra-fast режим для больших графов: без долгой анимации камеры,
+        // чтобы убрать лаг при переходе по ссылке-источнику из summary.
+        const bigGraph = nodeCount() >= 100;
 
-        setTimeout(()=>{
-          try{
+        // Скролл к графу без smooth (минимум конкурирующих анимаций).
+        try{ graphEl?.scrollIntoView({block:"center"}); }catch(_){ }
+
+        try{
+          if(jellyTimer){ clearTimeout(jellyTimer); jellyTimer = null; }
+          network?.setOptions({physics: {enabled: false}});
+
+          if(bigGraph){
+            const pos = network?.getPositions?.([nodeId])?.[nodeId];
+            if(pos){
+              // Для 100+ узлов: мгновенное центрирование, без zoom-анимации.
+              network?.moveTo({
+                position: {x: pos.x, y: pos.y},
+                scale: 1.06,
+                animation: false,
+              });
+            }else{
+              network?.focus(nodeId, {
+                scale: 1.06,
+                animation: false,
+              });
+            }
+          }else{
             network?.focus(nodeId, {
-              scale: 1.18,
-              animation: {duration: 1000, easingFunction: "easeInOutQuad"}
+              scale: 1.12,
+              animation: {duration: 260, easingFunction: "easeInOutQuad"}
             });
-            nodesDS?.update([{id: nodeId, borderWidth: 4}]);
-            setTimeout(()=>{
-              try{ nodesDS?.update([{id: nodeId, borderWidth: 2}]); }catch(_){ }
-            }, 1600);
-          }catch(_){ }
-        }, 220);
+          }
 
-        // Даем скроллу + анимации дойти до узла перед открытием карточки
-        setTimeout(()=> openCard(nodeId), 1320);
+          nodesDS?.update([{id: nodeId, borderWidth: 4}]);
+          setTimeout(()=>{
+            try{ nodesDS?.update([{id: nodeId, borderWidth: 2}]); }catch(_){ }
+          }, bigGraph ? 900 : 1200);
+        }catch(_){ }
+
+        // Карточку открываем практически сразу: камера уже на месте
+        // (для bigGraph — мгновенно, для small — короткая анимация).
+        setTimeout(()=> openCard(nodeId), bigGraph ? 120 : 320);
       });
     });
   }
@@ -747,7 +793,7 @@
       toast("Введите запрос (мин. 2 символа)");
       return;
     }
-    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || 2)));
+    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || 1)));
     const wantSummary = !!(searchLlm && searchLlm.checked);
 
     if(wantSummary){
@@ -764,7 +810,7 @@
       d = await fetchJson("/api/kg/search", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({q, limit: 30, max_ctx: MAX_CTX, llm_summary: wantSummary})
+        body: JSON.stringify({q, limit: 120, max_ctx: MAX_CTX, llm_summary: wantSummary})
       });
     }catch(_){
       if(wantSummary) setSummaryHtml(`<span class="mono" style="font-size:11px;color:#9a8f82">Ошибка сети при поиске.</span>`);
@@ -861,7 +907,7 @@
       if(applyDepthFromHybridState()) return;
     }
 
-    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || 2)));
+    const depth = Math.max(0, Math.min(5, Number(depthEl?.value || 1)));
     let matches = [];
     if(lastMatchesQuery === q && Array.isArray(lastMatches) && lastMatches.length){
       matches = lastMatches;
@@ -942,6 +988,123 @@
     }, ms || 900);
   }
 
+  // Порог, после которого «глобальное желе» на перетаскивании отключается,
+  // и включается локальный режим: двигается только узел + соседи depth<=2.
+  const JELLY_NODE_LIMIT = 100;
+  const DRAG_LOCAL_DEPTH = 2;
+  const DRAG_MAX_LOCAL_NODES = 36; // жёстный лимит подвижных узлов для FPS
+  let dragLocalActive = false;
+  let dragFrozenIds = null; // Set замороженных узлов, которым вернём fixed=false
+
+  function nodeCount(){
+    try{ return knownNodeIds ? knownNodeIds.size : 0; }catch(_){ return 0; }
+  }
+
+  function trimLocalSet(localMap, maxNodes){
+    const arr = Array.from(localMap.entries()); // [id, depth]
+    if(arr.length <= maxNodes) return new Set(arr.map(([id])=>id));
+    // приоритет: меньшая глубина, затем меньшая степень (меньше "взрывает" физику)
+    arr.sort((a,b)=>{
+      const d = (a[1]||0) - (b[1]||0);
+      if(d) return d;
+      const da = (adjacency.get(a[0]) || new Set()).size;
+      const db = (adjacency.get(b[0]) || new Set()).size;
+      return da - db;
+    });
+    return new Set(arr.slice(0, maxNodes).map(([id])=>id));
+  }
+
+  // Локальное перетаскивание: физика только для таскаемого узла и его
+  // соседей до глубины DRAG_LOCAL_DEPTH; остальные узлы фиксируются на месте,
+  // чтобы весь граф не «плыл желе».
+  function startLocalDrag(dragIds){
+    if(!network || !nodesDS) return;
+
+    const localRaw = bfsDepth(dragIds, DRAG_LOCAL_DEPTH); // Map id->depth
+    const localSet = trimLocalSet(localRaw, DRAG_MAX_LOCAL_NODES);
+
+    const freezeUpd = [];
+    const localUpd = [];
+    dragFrozenIds = new Set();
+
+    for(const id of knownNodeIds){
+      if(localSet.has(id)){
+        localUpd.push({id, fixed: {x: false, y: false}});
+      }else{
+        // Без x/y и physics:false: меньше payload в DataSet.update,
+        // меньше лаг на больших графах.
+        freezeUpd.push({id, fixed: {x: true, y: true}});
+        dragFrozenIds.add(id);
+      }
+    }
+
+    if(freezeUpd.length) nodesDS.update(freezeUpd);
+    if(localUpd.length) nodesDS.update(localUpd);
+
+    network.setOptions({
+      interaction: {hover: false, hideEdgesOnDrag: true},
+      physics: {
+        enabled: true,
+        stabilization: false,
+        barnesHut: {
+          gravitationalConstant: -9000,
+          springLength: 170,
+          springConstant: 0.02,
+          damping: 0.62,
+        },
+        minVelocity: 1.0,
+      }
+    });
+
+    dragLocalActive = true;
+  }
+
+  function endLocalDrag(){
+    if(!network || !nodesDS){ dragLocalActive = false; dragFrozenIds = null; return; }
+
+    if(dragFrozenIds && dragFrozenIds.size){
+      const upd = [];
+      for(const id of dragFrozenIds){
+        upd.push({id, fixed: {x: false, y: false}});
+      }
+      if(upd.length) nodesDS.update(upd);
+    }
+
+    dragFrozenIds = null;
+    dragLocalActive = false;
+
+    if(jellyTimer) clearTimeout(jellyTimer);
+    jellyTimer = setTimeout(()=>{
+      if(network){
+        network.setOptions({
+          interaction: {hover: true, hideEdgesOnDrag: true},
+          physics: {enabled: false}
+        });
+      }
+      jellyTimer = null;
+    }, 260);
+  }
+
+  // Единая точка обработки начала drag: для маленьких графов — прежнее
+  // «желе», для больших (100+) — локальный режим.
+  function handleDragStart(params){
+    if(!params || !params.nodes || !params.nodes.length) return;
+    if(nodeCount() >= JELLY_NODE_LIMIT){
+      startLocalDrag(params.nodes);
+    }else{
+      enableJelly(1200);
+    }
+  }
+
+  function handleDragEnd(params){
+    if(!params || !params.nodes || !params.nodes.length) return;
+    if(dragLocalActive){
+      endLocalDrag();
+    }else{
+      enableJelly(900);
+    }
+  }
+
   function syncGraph(payload){
     const inNodes = payload.nodes || [];
     const inEdges = payload.edges || [];
@@ -990,12 +1153,8 @@
       network.on("click", (params)=>{
         if(params.nodes && params.nodes[0]) openCard(params.nodes[0]);
       });
-      network.on("dragStart", (params)=>{
-        if(params && params.nodes && params.nodes.length) enableJelly(1200);
-      });
-      network.on("dragEnd", (params)=>{
-        if(params && params.nodes && params.nodes.length) enableJelly(900);
-      });
+      network.on("dragStart", handleDragStart);
+      network.on("dragEnd", handleDragEnd);
       network.once("stabilizationIterationsDone", ()=>{
         network.setOptions({physics: {enabled: false}});
         applyHubShapes();
@@ -1171,6 +1330,25 @@
     btnLoadFull.onclick = loadFullGraph;
   }
 
+  if(btnExport){
+    btnExport.onclick = async ()=>{
+      try{
+        btnExport.disabled = true;
+        await downloadExportZip("sqlite_csv");
+        toast("Выгрузка готова");
+      }catch(_){
+        try{
+          await downloadExportZip("csv_only");
+          toast("Выгрузка готова (csv-only)");
+        }catch(_e){
+          toast("Ошибка выгрузки");
+        }
+      }finally{
+        btnExport.disabled = false;
+      }
+    };
+  }
+
   if(btnSearchToggle && searchBox){
     btnSearchToggle.onclick = ()=>{
       const open = searchBox.style.display !== "none";
@@ -1191,7 +1369,7 @@
 
   if(depthEl && depthVal){
     const syncDepth = ()=>{
-      depthVal.textContent = String(depthEl.value || "2");
+      depthVal.textContent = String(depthEl.value || "1");
       applyDepthRealtime(false);
     };
     depthEl.addEventListener("input", syncDepth);

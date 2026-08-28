@@ -11,17 +11,22 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone, date as _date
 
 import uuid
+import io
+import csv
+import tempfile
+import zipfile
+import sqlite3
 
 from fastapi import FastAPI, BackgroundTasks, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.pipeline import PMAnalyzePipeline, Settings
 from app.prompts import CATEGORIES
 from app.email_sender import EmailSender
 from app.digest import collect_digest, render_digest_html, PRESET_TITLE, render_reviews_markdown, upload_markdown_to_obs
-from app.search import search_quick, search_hybrid, llm_summary, search_kg_hybrid, llm_summary_kg, search_kg_quick, LLM_MODEL
+from app.search import search_quick, search_hybrid, llm_summary, search_kg_hybrid, llm_summary_kg, search_kg_quick, LLM_MODEL, EMBED_DIM
 from app.kg_runtime import KGRunManager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -212,14 +217,14 @@ async def lifespan(app: FastAPI):
             WHERE COALESCE(source_url, '') = ''
         """)
 
-        await con.execute("""
+        await con.execute(f"""
             CREATE TABLE IF NOT EXISTS process_mining.knowledge_embeddings (
                 knowledge_id INTEGER PRIMARY KEY
                     REFERENCES process_mining.knowledge(id) ON DELETE CASCADE,
                 article_id BIGINT
                     REFERENCES process_mining.papers_metadata(id) ON DELETE SET NULL,
                 content TEXT NOT NULL,
-                embedding VECTOR(4096),
+                embedding VECTOR({EMBED_DIM}),
                 tsv TSVECTOR,
                 model TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -235,12 +240,12 @@ async def lifespan(app: FastAPI):
             ON process_mining.knowledge_embeddings USING GIN(tsv)
         """)
 
-        await con.execute("""
+        await con.execute(f"""
             CREATE TABLE IF NOT EXISTS process_mining.wiki_page_embeddings (
                 wiki_page_id INTEGER PRIMARY KEY
                     REFERENCES process_mining.wiki_pages(id) ON DELETE CASCADE,
                 content TEXT NOT NULL,
-                embedding VECTOR(4096),
+                embedding VECTOR({EMBED_DIM}),
                 tsv TSVECTOR,
                 model TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -758,6 +763,142 @@ async def me(request: Request):
 @app.get("/health")
 async def health():
     return {"ok": True, "service": "PMAnalyze"}
+
+
+# ---------------- Local pipeline export ----------------
+_LOCAL_EXPORT_TABLES = [
+    "knowledge",
+    "metadata_knowledge",
+    "knowledge_review",
+    "knowledge_tags",
+    "knowledge_relations",
+]
+
+
+def _to_cell(v):
+    if v is None:
+        return ""
+    if isinstance(v, (datetime, _date)):
+        return v.isoformat()
+    if isinstance(v, (dict, list, tuple)):
+        try:
+            return json.dumps(v, ensure_ascii=False)
+        except Exception:
+            return str(v)
+    return str(v)
+
+
+async def _collect_table_columns(con: asyncpg.Connection, table: str) -> list[str]:
+    rows = await con.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'process_mining' AND table_name = $1
+        ORDER BY ordinal_position
+        """,
+        table,
+    )
+    return [r["column_name"] for r in rows]
+
+
+async def _export_local_tables(tmp_dir: str, mode: str) -> dict:
+    csv_dir = os.path.join(tmp_dir, "csv")
+    os.makedirs(csv_dir, exist_ok=True)
+    sqlite_path = os.path.join(tmp_dir, "pm_knowledge_local.sqlite")
+    sq = sqlite3.connect(sqlite_path)
+    meta = {"tables": {}, "sqlite_path": sqlite_path}
+
+    try:
+        async with pool.acquire() as con:
+            for t in _LOCAL_EXPORT_TABLES:
+                cols = await _collect_table_columns(con, t)
+                if not cols:
+                    continue
+                q = f'SELECT * FROM process_mining."{t}"'
+                rows = await con.fetch(q)
+
+                csv_path = os.path.join(csv_dir, f"{t}.csv")
+                with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerow(cols)
+                    for r in rows:
+                        w.writerow([_to_cell(r[c]) for c in cols])
+
+                if mode == "sqlite_csv":
+                    col_sql = ", ".join([f'"{c}" TEXT' for c in cols])
+                    sq.execute(f'DROP TABLE IF EXISTS "{t}"')
+                    sq.execute(f'CREATE TABLE "{t}" ({col_sql})')
+                    if rows:
+                        ph = ",".join(["?"] * len(cols))
+                        col_names = ", ".join([f'"{c}"' for c in cols])
+                        ins = f'INSERT INTO "{t}" ({col_names}) VALUES ({ph})'
+                        sq.executemany(ins, [[_to_cell(r[c]) for c in cols] for r in rows])
+
+                meta["tables"][t] = len(rows)
+
+        sq.commit()
+        return meta
+    finally:
+        sq.close()
+
+
+@app.get("/api/local-pipeline/export")
+async def local_pipeline_export(mode: str = "sqlite_csv"):
+    mode = (mode or "sqlite_csv").strip().lower()
+    if mode not in ("sqlite_csv", "csv_only"):
+        return JSONResponse({"ok": False, "error": "bad_mode"}, status_code=400)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    base_dir = os.path.join(BASE_DIR, "local_pipeline_6_4_10")
+    include_files = [
+        os.path.join(base_dir, "local_pm_pipeline_6_4_10.ipynb"),
+        os.path.join(base_dir, "requirements.txt"),
+        os.path.join(base_dir, "README.md"),
+        os.path.join(base_dir, ".env.example"),
+    ]
+
+    with tempfile.TemporaryDirectory(prefix="pma_local_export_") as td:
+        meta = await _export_local_tables(td, mode)
+        zip_path = os.path.join(td, f"local_pipeline_{mode}_{ts}.zip")
+
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if mode == "sqlite_csv":
+                sp = meta.get("sqlite_path")
+                if sp and os.path.exists(sp):
+                    zf.write(sp, arcname="pm_knowledge_local.sqlite")
+
+            csv_dir = os.path.join(td, "csv")
+            if os.path.isdir(csv_dir):
+                for name in sorted(os.listdir(csv_dir)):
+                    pp = os.path.join(csv_dir, name)
+                    if os.path.isfile(pp):
+                        zf.write(pp, arcname=name)
+
+            for fp in include_files:
+                if os.path.isfile(fp):
+                    zf.write(fp, arcname=os.path.basename(fp))
+
+            zf.writestr(
+                "manifest.json",
+                json.dumps(
+                    {
+                        "ok": True,
+                        "mode": mode,
+                        "generated_at_utc": ts,
+                        "tables": meta.get("tables", {}),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
+
+        with open(zip_path, "rb") as f:
+            data = f.read()
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="local_pipeline_{mode}_{ts}.zip"'
+    }
+    return StreamingResponse(io.BytesIO(data), media_type="application/zip", headers=headers)
 
 
 # ---------------- Stats для дашборда ----------------
@@ -1441,7 +1582,7 @@ async def api_search_stats():
             "vectors": d["with_embedding"],
             "total_rows": d["total_rows"],
             "reviewable_articles": d["reviewable_articles"],
-            "dim": 4096,
+            "dim": EMBED_DIM,
             "model": d.get("model"),
             "updated_at": upd.isoformat() if upd else None,
         }
@@ -1571,8 +1712,8 @@ async def api_search_hybrid(body: HybridSearchIn, request: Request):
 
 class KgSearchIn(BaseModel):
     q: str
-    limit: int = 30
-    max_ctx: int = 15
+    limit: int = 120
+    max_ctx: int = 100
     llm_summary: bool = False
 
 
@@ -1583,14 +1724,14 @@ async def api_kg_search(body: KgSearchIn, request: Request):
     Всегда выполняет гибридный поиск по эмбеддингам графа, независимо от того,
     есть ли локальные совпадения подсветки на фронте.
     Найдено может быть больше, чем реально уходит в модель: контекст LLM
-    ограничен max_ctx (по умолчанию 15) первыми (лучшими по RRF) узлами.
+    ограничен max_ctx (по умолчанию 100) первыми (лучшими по RRF) узлами.
     """
     q = (body.q or "").strip()
     if not q:
         return JSONResponse({"ok": False, "error": "empty query"}, status_code=400)
 
-    max_ctx = min(50, max(1, body.max_ctx))
-    limit = min(60, max(1, body.limit))
+    max_ctx = min(100, max(1, body.max_ctx))
+    limit = min(150, max(1, body.limit))
 
     try:
         items = await search_kg_hybrid(pool, q, limit)

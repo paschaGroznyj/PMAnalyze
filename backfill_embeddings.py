@@ -13,6 +13,8 @@ DSN = os.getenv("PMANALYZE_DSN", "postgresql://catchpm:catchpm2026@catchpm-postg
 CLOUD_KEY = os.getenv("CLOUD_LLM_ACCESS_KEY", "")
 CLOUD_BASE = os.getenv("CLOUD_LLM_BASE", "https://foundation-models.api.cloud.ru/v1")
 EMBED_MODEL = os.getenv("PM_EMBED_MODEL", "Qwen/Qwen3-VL-Embedding-8B")
+EMBED_BASE = os.getenv("PM_EMBED_BASE", CLOUD_BASE)
+EMBED_KEY = os.getenv("PM_EMBED_KEY", CLOUD_KEY)
 TS_CONFIG = "russian"
 
 
@@ -22,8 +24,8 @@ def vec_literal(vec):
 
 async def embed_one(client, text):
     r = await client.post(
-        f"{CLOUD_BASE}/embeddings",
-        headers={"Authorization": f"Bearer {CLOUD_KEY}", "Content-Type": "application/json"},
+        f"{EMBED_BASE}/embeddings",
+        headers={"Authorization": f"Bearer {EMBED_KEY}", "Content-Type": "application/json"},
         json={"model": EMBED_MODEL, "input": [text[:30000]]},
     )
     r.raise_for_status()

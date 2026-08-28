@@ -73,6 +73,19 @@ class Settings:
     max_per_source: int = 20
     relevance_threshold: float = 0.6
 
+    # KG merge/collapse settings
+    kg_collapse_every_articles: int = int(os.getenv("KG_COLLAPSE_EVERY_ARTICLES", "10"))
+    kg_exact_min_norm_len: int = int(os.getenv("KG_EXACT_MIN_NORM_LEN", "120"))
+    kg_semantic_threshold: float = float(os.getenv("KG_SEMANTIC_MERGE_THRESHOLD", "0.93"))
+    kg_semantic_pair_limit: int = int(os.getenv("KG_SEMANTIC_PAIR_LIMIT", "120"))
+
+    # KG relation density control
+    kg_relation_min_score: float = float(os.getenv("KG_RELATION_MIN_SCORE", "0.75"))
+    kg_relates_to_min_score: float = float(os.getenv("KG_RELATES_TO_MIN_SCORE", "0.82"))
+    kg_cross_min_vec_sim: float = float(os.getenv("KG_CROSS_MIN_VEC_SIM", "0.68"))
+    kg_generic_target_min_score: float = float(os.getenv("KG_GENERIC_TARGET_MIN_SCORE", "0.88"))
+    kg_generic_in_degree_cap: int = int(os.getenv("KG_GENERIC_IN_DEGREE_CAP", "28"))
+
     cloud_key: str = field(default_factory=lambda: os.getenv("CLOUD_LLM_ACCESS_KEY", "").strip())
     cloud_messages_url: str = "https://foundation-models.api.cloud.ru/v1/messages"
     cloud_chat_url: str = "https://foundation-models.api.cloud.ru/v1/chat/completions"
@@ -91,6 +104,7 @@ class PMAnalyzePipeline:
         self.settings = settings
         self._task = None
         self._stop = asyncio.Event()
+        self._kg_processed_total = 0
 
         self._parser_state_lock = asyncio.Lock()
         self._parser_running = False
@@ -234,6 +248,375 @@ class PMAnalyzePipeline:
             if cls._is_valid_http_url(v):
                 return v
         return ""
+
+    @staticmethod
+    def _normalize_knowledge_text_for_exact_merge(text: str) -> str:
+        s = (text or "").strip().lower()
+        if not s:
+            return ""
+        s = s.replace("\u00a0", " ")
+        s = re.sub(r"https?://\S+", " ", s)
+        # убираем markdown/служебные символы, но оставляем буквы/цифры
+        s = re.sub(r"[`*_#>\[\](){}\"'“”‘’]", " ", s)
+        s = re.sub(r"[^\w\sа-яё-]", " ", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s+", " ", s).strip(" .,:;!?")
+        return s
+
+    @staticmethod
+    def _is_generic_definition_text(text: str) -> bool:
+        s = (text or "").strip().lower()
+        if len(s) < 40:
+            return False
+        patterns = [
+            r"\bопределяется как\b",
+            r"\bэто подход\b",
+            r"\bэто метод\b",
+            r"\bэто дисциплина\b",
+            r"\bзанимается\b",
+            r"\bis defined as\b",
+            r"\bis a\b",
+            r"\bis an\b",
+            r"\bdiscipline\b",
+            r"\bsubfield\b",
+        ]
+        return any(re.search(p, s) for p in patterns)
+
+    async def _allow_relation_by_density(self, target_id: int, relation_type: str, relevance_score: float) -> bool:
+        # Базовые пороги
+        if relevance_score < float(self.settings.kg_relation_min_score or 0.75):
+            return False
+        if relation_type == "relates_to" and relevance_score < float(self.settings.kg_relates_to_min_score or 0.82):
+            return False
+
+        # Доп. защита для generic-definition целей
+        async with self.pool.acquire() as con:
+            ttext = await con.fetchval(
+                "SELECT text_knowledge FROM process_mining.knowledge WHERE id=$1 AND COALESCE(status,'active') <> 'merged'",
+                int(target_id),
+            )
+            if not ttext:
+                return True
+            if not self._is_generic_definition_text(str(ttext)):
+                return True
+
+            if relevance_score < float(self.settings.kg_generic_target_min_score or 0.88):
+                return False
+
+            indeg = await con.fetchval(
+                "SELECT count(*) FROM process_mining.entity_relations WHERE target_id=$1",
+                int(target_id),
+            )
+            cap = max(5, int(self.settings.kg_generic_in_degree_cap or 28))
+            if int(indeg or 0) >= cap:
+                return False
+        return True
+
+    async def _prune_generic_definition_inbound(self) -> int:
+        cap = max(5, int(self.settings.kg_generic_in_degree_cap or 28))
+        async with self.pool.acquire() as con:
+            deleted = await con.fetchval(
+                """
+                WITH generic AS (
+                    SELECT id
+                    FROM process_mining.knowledge
+                    WHERE COALESCE(status,'active') <> 'merged'
+                      AND lower(COALESCE(text_knowledge,'')) ~
+                          '(определяется как|это подход|это метод|это дисциплина|занимается|is defined as|is a |is an |discipline|subfield)'
+                ),
+                ranked AS (
+                    SELECT
+                        e.id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY e.target_id
+                            ORDER BY e.relevance_score DESC NULLS LAST, e.importance DESC NULLS LAST, e.id ASC
+                        ) AS rn
+                    FROM process_mining.entity_relations e
+                    JOIN generic g ON g.id = e.target_id
+                ),
+                del AS (
+                    DELETE FROM process_mining.entity_relations e
+                    USING ranked r
+                    WHERE e.id = r.id
+                      AND r.rn > $1
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM del
+                """,
+                cap,
+            )
+        return int(deleted or 0)
+
+    async def _collapse_knowledge_nodes(self) -> dict:
+        """Схлопывание дубликатов knowledge:
+        1) exact-схлопывание по нормализованному тексту
+        2) semantic-схлопывание по cosine similarity embeddings
+
+        Канонический узел = минимальный id в группе.
+        Перекидываем рёбра и source_ids wiki на канон, дубль помечаем status='merged',
+        metadata_knowledge += merged_into/merged_reason.
+        """
+        exact_groups = 0
+        exact_nodes_merged = 0
+        sem_groups = 0
+        sem_nodes_merged = 0
+
+        # ---- 1) exact groups ----
+        async with self.pool.acquire() as con:
+            rows = await con.fetch(
+                """
+                SELECT id, text_knowledge
+                FROM process_mining.knowledge
+                WHERE COALESCE(status,'active') <> 'merged'
+                ORDER BY id ASC
+                """
+            )
+
+        by_norm: dict[str, list[int]] = {}
+        min_len = max(40, int(self.settings.kg_exact_min_norm_len or 120))
+        for r in rows:
+            kid = int(r["id"])
+            norm = self._normalize_knowledge_text_for_exact_merge(str(r["text_knowledge"] or ""))
+            if len(norm) < min_len:
+                continue
+            by_norm.setdefault(norm, []).append(kid)
+
+        for _, ids in by_norm.items():
+            if len(ids) < 2:
+                continue
+            ids = sorted(set(int(x) for x in ids))
+            canonical_id = ids[0]
+            dup_ids = ids[1:]
+            changed = await self._merge_knowledge_duplicates(canonical_id, dup_ids, reason="exact_text")
+            if changed:
+                exact_groups += 1
+                exact_nodes_merged += len(dup_ids)
+
+        # ---- 2) semantic pairs ----
+        th = float(self.settings.kg_semantic_threshold or 0.93)
+        pair_limit = max(20, min(400, int(self.settings.kg_semantic_pair_limit or 120)))
+
+        async with self.pool.acquire() as con:
+            pairs = await con.fetch(
+                """
+                WITH cands AS (
+                  SELECT
+                    k1.id AS id1,
+                    k2.id AS id2,
+                    1 - (ke1.embedding <=> ke2.embedding) AS sim
+                  FROM process_mining.knowledge_embeddings ke1
+                  JOIN process_mining.knowledge_embeddings ke2 ON ke1.knowledge_id < ke2.knowledge_id
+                  JOIN process_mining.knowledge k1 ON k1.id = ke1.knowledge_id
+                  JOIN process_mining.knowledge k2 ON k2.id = ke2.knowledge_id
+                  WHERE COALESCE(k1.status,'active') <> 'merged'
+                    AND COALESCE(k2.status,'active') <> 'merged'
+                )
+                SELECT id1, id2, sim
+                FROM cands
+                WHERE sim >= $1
+                ORDER BY sim DESC
+                LIMIT $2
+                """,
+                th,
+                pair_limit,
+            )
+
+        # union-find по парам
+        parent: dict[int, int] = {}
+
+        def find(x: int) -> int:
+            parent.setdefault(x, x)
+            if parent[x] != x:
+                parent[x] = find(parent[x])
+            return parent[x]
+
+        def union(a: int, b: int):
+            ra, rb = find(a), find(b)
+            if ra == rb:
+                return
+            if ra < rb:
+                parent[rb] = ra
+            else:
+                parent[ra] = rb
+
+        for p in pairs:
+            try:
+                a = int(p["id1"])
+                b = int(p["id2"])
+            except Exception:
+                continue
+            union(a, b)
+
+        groups: dict[int, list[int]] = {}
+        for x in list(parent.keys()):
+            groups.setdefault(find(x), []).append(x)
+
+        for _, ids in groups.items():
+            uniq = sorted(set(int(i) for i in ids))
+            if len(uniq) < 2:
+                continue
+            canonical_id = uniq[0]
+            dup_ids = uniq[1:]
+            changed = await self._merge_knowledge_duplicates(canonical_id, dup_ids, reason=f"semantic_sim>={th:.2f}")
+            if changed:
+                sem_groups += 1
+                sem_nodes_merged += len(dup_ids)
+
+        # ---- 3) prune inbound to generic-definition targets ----
+        generic_pruned = await self._prune_generic_definition_inbound()
+
+        return {
+            "ok": True,
+            "exact_groups": exact_groups,
+            "exact_nodes_merged": exact_nodes_merged,
+            "semantic_groups": sem_groups,
+            "semantic_nodes_merged": sem_nodes_merged,
+            "semantic_threshold": th,
+            "pair_limit": pair_limit,
+            "generic_pruned_edges": generic_pruned,
+        }
+
+    async def _merge_knowledge_duplicates(self, canonical_id: int, dup_ids: list[int], reason: str) -> bool:
+        canonical_id = int(canonical_id)
+        dup_ids = sorted(set(int(x) for x in dup_ids if int(x) != canonical_id))
+        if not dup_ids:
+            return False
+
+        async with self.pool.acquire() as con:
+            # убеждаемся, что канон жив
+            alive = await con.fetchval(
+                "SELECT 1 FROM process_mining.knowledge WHERE id=$1 AND COALESCE(status,'active') <> 'merged'",
+                canonical_id,
+            )
+            if not alive:
+                return False
+
+            # 1) source_id -> canonical
+            await con.execute(
+                """
+                UPDATE process_mining.entity_relations
+                SET source_id = $1
+                WHERE source_id = ANY($2::int[])
+                """,
+                canonical_id,
+                dup_ids,
+            )
+
+            # 2) target_id -> canonical
+            await con.execute(
+                """
+                UPDATE process_mining.entity_relations
+                SET target_id = $1
+                WHERE target_id = ANY($2::int[])
+                """,
+                canonical_id,
+                dup_ids,
+            )
+
+            # 3) удаляем самопетли после редиректа
+            await con.execute(
+                """
+                DELETE FROM process_mining.entity_relations
+                WHERE source_id = target_id
+                """
+            )
+
+            # 4) дедуп рёбер по (source,target,type), оставляем max(score/importance)
+            await con.execute(
+                """
+                WITH ranked AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                             PARTITION BY source_id, target_id, relation_type
+                             ORDER BY relevance_score DESC NULLS LAST, importance DESC NULLS LAST, id ASC
+                           ) AS rn
+                    FROM process_mining.entity_relations
+                )
+                DELETE FROM process_mining.entity_relations e
+                USING ranked r
+                WHERE e.id = r.id AND r.rn > 1
+                """
+            )
+
+            # 5) wiki source_ids: заменяем dup -> canonical, уникализируем
+            wiki_rows = await con.fetch(
+                """
+                SELECT id, source_ids
+                FROM process_mining.wiki_pages
+                WHERE source_ids IS NOT NULL
+                """
+            )
+            dup_set = set(dup_ids)
+            for w in wiki_rows:
+                wid = int(w["id"])
+                src = w["source_ids"]
+                if not isinstance(src, list):
+                    continue
+                changed_local = False
+                new_ids = []
+                for v in src:
+                    try:
+                        iv = int(v)
+                    except Exception:
+                        continue
+                    if iv in dup_set:
+                        iv = canonical_id
+                        changed_local = True
+                    new_ids.append(iv)
+                if not changed_local:
+                    continue
+                # unique preserve order
+                seen = set()
+                uniq = []
+                for iv in new_ids:
+                    if iv in seen:
+                        continue
+                    seen.add(iv)
+                    uniq.append(iv)
+                await con.execute(
+                    "UPDATE process_mining.wiki_pages SET source_ids=$2::jsonb, updated_at=now() WHERE id=$1",
+                    wid,
+                    json.dumps(uniq),
+                )
+
+            # 6) помечаем дубль как merged
+            for did in dup_ids:
+                await con.execute(
+                    """
+                    UPDATE process_mining.knowledge
+                    SET status='merged',
+                        metadata_knowledge = COALESCE(metadata_knowledge,'{}'::jsonb)
+                            || jsonb_build_object('merged_into',$1,'merged_reason',$2,'merged_at',now()::text),
+                        updated_at = now()
+                    WHERE id=$3
+                    """,
+                    canonical_id,
+                    reason,
+                    did,
+                )
+
+            # 7) если у дубликатов были embeddings — чистим их (на каноне уже есть свой)
+            await con.execute(
+                "DELETE FROM process_mining.knowledge_embeddings WHERE knowledge_id = ANY($1::int[])",
+                dup_ids,
+            )
+
+        return True
+
+    async def _maybe_run_periodic_collapse(self) -> dict | None:
+        every = max(0, int(self.settings.kg_collapse_every_articles or 0))
+        if every <= 0:
+            return None
+        if self._kg_processed_total <= 0:
+            return None
+        if self._kg_processed_total % every != 0:
+            return None
+        try:
+            res = await self._collapse_knowledge_nodes()
+            print(f"[pmanalyze] collapse run after processed={self._kg_processed_total}: {res}")
+            return res
+        except Exception as e:
+            print(f"[pmanalyze] collapse error after processed={self._kg_processed_total}: {type(e).__name__}: {e}")
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     # ---------------- lifecycle ----------------
     async def start(self):
@@ -1408,6 +1791,10 @@ class PMAnalyzePipeline:
                                 rscore = max(0.0, min(1.0, rscore))
                                 rimp = max(0.0, min(1.0, rimp))
 
+                                # density guard: режем слабые/generic-связи
+                                if not await self._allow_relation_by_density(tid, rtype, rscore):
+                                    continue
+
                                 async with self.pool.acquire() as con:
                                     existing_rel = await con.fetchval(
                                         """
@@ -1451,7 +1838,7 @@ class PMAnalyzePipeline:
                                 article_id=aid,
                                 exclude_ids=inserted_id_set,
                                 top_k=8,
-                                min_vec_sim=0.62,
+                                min_vec_sim=float(self.settings.kg_cross_min_vec_sim or 0.68),
                             )
                             cand_nodes = []
                             for c in cands:
@@ -1507,6 +1894,9 @@ class PMAnalyzePipeline:
                                     rimp = 0.5
                                 rscore = max(0.0, min(1.0, rscore))
                                 rimp = max(0.0, min(1.0, rimp))
+
+                                if not await self._allow_relation_by_density(tid, rtype, rscore):
+                                    continue
 
                                 async with self.pool.acquire() as con:
                                     existing_rel = await con.fetchval(
@@ -1650,6 +2040,8 @@ class PMAnalyzePipeline:
                             aid,
                         )
                     processed += 1
+                    self._kg_processed_total += 1
+                    await self._maybe_run_periodic_collapse()
                 except Exception as e:
                     errors += 1
                     print(f"[pmanalyze] process_knowledge_graph article_id={aid} error: {type(e).__name__}: {e}")

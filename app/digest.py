@@ -6,6 +6,8 @@ from html import escape
 from zoneinfo import ZoneInfo
 import os
 import re
+import json
+import ast
 import uuid
 from dotenv import load_dotenv
 from pathlib import Path
@@ -83,27 +85,51 @@ def period_bounds(preset: str, tz_name: str = "Europe/Moscow"):
 def _normalize_authors(authors):
     if authors is None:
         return []
+
+    def _uniq(vals):
+        out, seen = [], set()
+        for a in vals:
+            t = str(a).strip().strip('"\'')
+            if not t:
+                continue
+            k = t.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(t)
+        return out
+
     if isinstance(authors, list):
-        vals = [str(x).strip() for x in authors if str(x).strip()]
+        vals = authors
     elif isinstance(authors, dict):
-        if isinstance(authors.get("list"), list):
-            vals = [str(x).strip() for x in authors.get("list") if str(x).strip()]
+        # Кейс из UI: авторы могут храниться прямо в ключах dict.
+        keys = [k for k in authors.keys() if str(k).strip()]
+        if keys:
+            vals = keys
+        elif isinstance(authors.get("list"), list):
+            vals = authors.get("list")
         elif isinstance(authors.get("LIST"), list):
-            vals = [str(x).strip() for x in authors.get("LIST") if str(x).strip()]
+            vals = authors.get("LIST")
         else:
-            vals = [str(k).strip() for k in authors.keys() if str(k).strip()]
+            vals = []
     else:
         t = str(authors).strip()
-        vals = [x.strip() for x in re.split(r"[,;]", t) if x.strip()] if t else []
+        if not t:
+            vals = []
+        elif (t.startswith("{") and t.endswith("}")) or (t.startswith("[") and t.endswith("]")):
+            parsed = None
+            try:
+                parsed = json.loads(t)
+            except Exception:
+                try:
+                    parsed = ast.literal_eval(t)
+                except Exception:
+                    parsed = None
+            vals = _normalize_authors(parsed) if parsed is not None else [x.strip() for x in re.split(r"[,;]", t) if x.strip()]
+        else:
+            vals = [x.strip() for x in re.split(r"[,;]", t) if x.strip()]
 
-    out, seen = [], set()
-    for a in vals:
-        k = a.lower()
-        if k in seen:
-            continue
-        seen.add(k)
-        out.append(a)
-    return out
+    return _uniq(vals)
 
 
 async def collect_digest(pool, preset: str) -> dict:

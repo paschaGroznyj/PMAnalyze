@@ -1,6 +1,37 @@
 <!-- ONBOARDING TOUR (partial) -->
 <!-- Подключается склейкой в роуте GET / перед закрывающим тегом body. -->
 <!-- Стили переиспользуются из dashboard.html: .modal-bg / .modal / .btn / .foot -->
+<style>
+  #onb-modal .modal{max-height:92vh; overflow:auto}
+  #onb-body{white-space:normal}
+  #onb-modal .onb-media-wrap{
+    margin-top:10px;
+    border:2px solid var(--ink);
+    background:#fff;
+    border-radius:8px;
+    overflow:hidden;
+  }
+  #onb-modal .onb-media{
+    display:block;
+    width:100%;
+    height:auto;
+    max-height:44vh;
+    object-fit:contain;
+    background:#fff;
+  }
+  #onb-modal .onb-caption{
+    font-size:11px;
+    color:#7f7469;
+    padding:6px 8px;
+    border-top:1px solid rgba(30,26,22,.12);
+    background:#faf8f5;
+  }
+  @media (max-width:720px){
+    #onb-modal .modal{max-width:94vw !important}
+    #onb-body{font-size:13px !important; line-height:1.45 !important; min-height:86px !important}
+    #onb-modal .onb-media{max-height:38vh}
+  }
+</style>
 <div class="modal-bg" id="onb-modal">
   <div class="modal" style="max-width:520px">
     <div class="mono" style="color:var(--orange)">Знакомство с PMAnalyze</div>
@@ -28,10 +59,18 @@
       b:"Верхние карточки показывают сводку: сколько всего статей собрано, сколько релевантных, сколько ревью готово. Диаграммы разбивают базу по категориям и источникам парсинга." },
     { t:"Запуск парсера и ревью",
       b:"Кнопки действий запускают сбор новых статей из выбранных источников (arXiv, CrossRef, CORE и др.) и генерацию LLM-ревью. Прогресс отображается прямо на кнопке." },
+    { t:"Граф знаний: запуск и кнопки",
+      b:"В блоке «Граф знаний» есть отдельные элементы управления: кнопка «🕸 создание графа», кнопка обновления графа и переключатель «Поиск по графу». В шапке блока показываются узлы и связи." },
+    { t:"Скрин графа (демо)",
+      b:"Это живой скрин панели графа из демо-стенда. На нём видно основные элементы: кнопки управления, счётчики узлов/связей и область визуализации.",
+      img:"/static/img/onboarding/kg_demo_graph.png",
+      cap:"Раздел «Граф знаний»: кнопки, счётчики и визуализация. Адаптировано для мобильного онбординга." },
+    { t:"Поиск: быстрый, гибридный и по графу",
+      b:"Доступно несколько видов поиска: быстрый поиск по мере ввода, гибридный поиск (BM25 + вектор), и поиск по графу knowledge/wiki с регулировкой глубины связей. Для гибридного и граф-поиска можно включать LLM-саммари." },
+    { t:"Кликабельные источники и ссылки",
+      b:"Источники открываются в один клик: в карточке статьи есть кнопка «открыть источник». В саммари по графу ссылки вида [1], [2] тоже кликабельны и ведут к соответствующим узлам." },
     { t:"Дайджест на почту",
       b:"Кнопка «Отправить дайджест» собирает подборку ревью за неделю/месяц/квартал и отправляет на указанный email. Есть список постоянных подписчиков." },
-    { t:"Поиск по базе",
-      b:"Гибридный поиск (семантика + ключевые слова) находит статьи и ревью по смыслу запроса. Кликните на результат — откроется карточка с полным ревью." },
     { t:"Фильтрация и сортировка статей",
       b:"В таблице статей нажмите «Фильтры» — откроется панель с фильтрами по названию, автору, тегу, категории, источнику, релевантности, наличию ревью, карантину, диапазону score и дате. Активные фильтры считаются на кнопке. А ещё сортировка: кликните по любому заголовку столбца (Score, Дата, Категория и др.) — таблица отсортируется, повторный клик меняет направление ▲/▼." },
   ];
@@ -42,7 +81,30 @@
   function onbRender(){
     const s = ONB_STEPS[onbIdx];
     $("#onb-title").textContent = s.t;
-    $("#onb-body").textContent = s.b;
+    const bodyEl = $("#onb-body");
+    bodyEl.textContent = s.b;
+
+    const oldMedia = document.getElementById("onb-media-wrap");
+    if(oldMedia) oldMedia.remove();
+
+    if(s.img){
+      const wrap = document.createElement("div");
+      wrap.id = "onb-media-wrap";
+      wrap.className = "onb-media-wrap";
+      const img = document.createElement("img");
+      img.className = "onb-media";
+      img.src = s.img;
+      img.alt = s.t || "Скрин демо";
+      wrap.appendChild(img);
+      if(s.cap){
+        const cap = document.createElement("div");
+        cap.className = "onb-caption";
+        cap.textContent = s.cap;
+        wrap.appendChild(cap);
+      }
+      bodyEl.insertAdjacentElement("afterend", wrap);
+    }
+
     $("#onb-step-badge").textContent = `Шаг ${onbIdx+1} из ${ONB_STEPS.length}`;
     const dots = ONB_STEPS.map((_,i)=>
       `<div style="flex:1;height:6px;border:2px solid var(--ink);background:${i<=onbIdx?'var(--orange)':'#fff'}"></div>`

@@ -21,7 +21,7 @@ from app.pipeline import PMAnalyzePipeline, Settings
 from app.prompts import CATEGORIES
 from app.email_sender import EmailSender
 from app.digest import collect_digest, render_digest_html, PRESET_TITLE, render_reviews_markdown, upload_markdown_to_obs
-from app.search import search_quick, search_hybrid, llm_summary, search_kg_hybrid, llm_summary_kg
+from app.search import search_quick, search_hybrid, llm_summary, search_kg_hybrid, llm_summary_kg, search_kg_quick, LLM_MODEL
 from app.kg_runtime import KGRunManager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,6 +98,39 @@ async def lifespan(app: FastAPI):
         await con.execute("""
             CREATE INDEX IF NOT EXISTS idx_ui_access_log_ip
             ON process_mining.ui_access_log(ip)
+        """)
+
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.llm_query_logs (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                route TEXT NOT NULL,
+                search_type TEXT NOT NULL,
+                user_id TEXT,
+                visitor_id TEXT,
+                client_ip TEXT,
+                query_text TEXT NOT NULL,
+                llm_requested BOOLEAN NOT NULL DEFAULT FALSE,
+                llm_called BOOLEAN NOT NULL DEFAULT FALSE,
+                model_name TEXT,
+                tokens_usage JSONB NOT NULL DEFAULT '{"input_tokens":0,"output_tokens":0,"total_tokens":0}'::jsonb,
+                found_count INT,
+                used_count INT,
+                summary_error TEXT,
+                meta JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_llm_query_logs_created_at
+            ON process_mining.llm_query_logs(created_at DESC)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_llm_query_logs_search_type
+            ON process_mining.llm_query_logs(search_type)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_llm_query_logs_user_id
+            ON process_mining.llm_query_logs(user_id)
         """)
 
         # Онбординг-события. Сейчас ключ = visitor_id(кука) + ip.
@@ -509,6 +542,72 @@ async def _log_ui_access(request: Request):
             )
     except Exception as e:
         api_logger.warning(f"ui_access_log_error: {e}")
+
+
+async def _log_llm_query(
+    request: Request,
+    *,
+    route: str,
+    search_type: str,
+    query_text: str,
+    llm_requested: bool,
+    llm_called: bool,
+    model_name: str | None,
+    tokens_usage: dict | None,
+    found_count: int | None = None,
+    used_count: int | None = None,
+    summary_error: str | None = None,
+    meta: dict | None = None,
+):
+    """Логирование пользовательских запросов к поиску/LLM в process_mining.llm_query_logs."""
+    try:
+        ident = current_identity(request)
+        visitor_id = _get_visitor_id(request)
+        ip = _extract_client_ip(request)
+        uid = ident.get("user_id") or None
+
+        q = (query_text or "").strip()[:8000]
+        se = (summary_error or "").strip()[:2000] or None
+
+        tu = tokens_usage or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        try:
+            tu_json = json.dumps({
+                "input_tokens": int(tu.get("input_tokens", 0) or 0),
+                "output_tokens": int(tu.get("output_tokens", 0) or 0),
+                "total_tokens": int(tu.get("total_tokens", 0) or 0),
+            }, ensure_ascii=False)
+        except Exception:
+            tu_json = '{"input_tokens":0,"output_tokens":0,"total_tokens":0}'
+
+        meta_json = json.dumps(meta or {}, ensure_ascii=False)
+
+        async with pool.acquire() as con:
+            await con.execute(
+                """
+                INSERT INTO process_mining.llm_query_logs(
+                    route, search_type, user_id, visitor_id, client_ip,
+                    query_text, llm_requested, llm_called, model_name,
+                    tokens_usage, found_count, used_count, summary_error, meta
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14::jsonb)
+                """,
+                (route or "")[:128],
+                (search_type or "other")[:32],
+                str(uid)[:128] if uid is not None else None,
+                (visitor_id or "")[:128] or None,
+                (ip or "")[:64] or None,
+                q,
+                bool(llm_requested),
+                bool(llm_called),
+                (model_name or "")[:128] or None,
+                tu_json,
+                int(found_count) if found_count is not None else None,
+                int(used_count) if used_count is not None else None,
+                se,
+                meta_json,
+            )
+    except Exception as e:
+        api_logger.warning(f"llm_query_log_error: {e}")
 
 
 # ---------------- Identity / Onboarding (фундамент под Authentik) ----------------
@@ -954,10 +1053,10 @@ async def kg_run_stop():
 
 
 @app.get("/api/graph")
-async def graph_data(limit_nodes: int = 450, limit_wiki: int = 120):
+async def graph_data(limit_nodes: int = 450, limit_wiki: int = 120, lite: bool = True):
     if not kg_manager:
         return JSONResponse({"ok": False, "error": "kg_manager_not_ready"}, status_code=503)
-    return await kg_manager.graph_payload(limit_nodes=limit_nodes, limit_wiki=limit_wiki)
+    return await kg_manager.graph_payload(limit_nodes=limit_nodes, limit_wiki=limit_wiki, lite=lite)
 
 
 @app.get("/api/graph/card")
@@ -1357,17 +1456,72 @@ class HybridSearchIn(BaseModel):
 
 
 @app.get("/api/search/quick")
-async def api_search_quick(q: str = "", limit: int = 8):
+async def api_search_quick(request: Request, q: str = "", limit: int = 8):
     """Live-поиск по совпадению слов (pg_trgm/ILIKE), для typeahead."""
     try:
         items = await search_quick(pool, q, min(20, max(1, limit)))
+        await _log_llm_query(
+            request,
+            route="/api/search/quick",
+            search_type="review",
+            query_text=q,
+            llm_requested=False,
+            llm_called=False,
+            model_name=None,
+            tokens_usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            found_count=len(items),
+            used_count=0,
+            summary_error=None,
+            meta={"mode": "quick", "limit": min(20, max(1, limit))},
+        )
+        return {"ok": True, "q": q, "count": len(items), "items": items}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@app.get("/api/kg/search/quick")
+async def api_kg_search_quick(request: Request, q: str = "", limit: int = 20):
+    """Live GET-поиск по узлам KG (для фронтовой подсветки в реальном времени)."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        await _log_llm_query(
+            request,
+            route="/api/kg/search/quick",
+            search_type="graph",
+            query_text=q,
+            llm_requested=False,
+            llm_called=False,
+            model_name=None,
+            tokens_usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            found_count=0,
+            used_count=0,
+            summary_error=None,
+            meta={"mode": "kg_quick", "reason": "query_too_short"},
+        )
+        return {"ok": True, "q": q, "count": 0, "items": []}
+    try:
+        items = await search_kg_quick(pool, q, min(150, max(1, limit)))
+        await _log_llm_query(
+            request,
+            route="/api/kg/search/quick",
+            search_type="graph",
+            query_text=q,
+            llm_requested=False,
+            llm_called=False,
+            model_name=None,
+            tokens_usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            found_count=len(items),
+            used_count=0,
+            summary_error=None,
+            meta={"mode": "kg_quick", "limit": min(150, max(1, limit))},
+        )
         return {"ok": True, "q": q, "count": len(items), "items": items}
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
 
 
 @app.post("/api/search/hybrid")
-async def api_search_hybrid(body: HybridSearchIn):
+async def api_search_hybrid(body: HybridSearchIn, request: Request):
     """Гибридный поиск BM25 + вектор (RRF). Опционально LLM-саммари по топу."""
     q = (body.q or "").strip()
     if not q:
@@ -1378,14 +1532,41 @@ async def api_search_hybrid(body: HybridSearchIn):
         return JSONResponse({"ok": False, "error": f"search: {type(e).__name__}: {e}"}, status_code=500)
 
     summary = None
+    summary_error = None
+    tokens_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    llm_called = False
     if body.llm_summary and items:
         try:
-            summary = await llm_summary(q, items[:6])
+            summary, tokens_usage = await llm_summary(q, items[:6])
+            llm_called = True
         except Exception as e:
             summary = None
-            return {"ok": True, "q": q, "count": len(items), "items": items,
-                    "summary": None, "summary_error": f"{type(e).__name__}: {e}"}
-    return {"ok": True, "q": q, "count": len(items), "items": items, "summary": summary}
+            summary_error = f"{type(e).__name__}: {e}"
+
+    await _log_llm_query(
+        request,
+        route="/api/search/hybrid",
+        search_type="review",
+        query_text=q,
+        llm_requested=bool(body.llm_summary),
+        llm_called=llm_called,
+        model_name=LLM_MODEL if llm_called else None,
+        tokens_usage=tokens_usage,
+        found_count=len(items),
+        used_count=min(len(items), 6) if llm_called else 0,
+        summary_error=summary_error,
+        meta={"mode": "hybrid", "limit": min(20, max(1, body.limit))},
+    )
+
+    return {
+        "ok": True,
+        "q": q,
+        "count": len(items),
+        "items": items,
+        "summary": summary,
+        "summary_error": summary_error,
+        "tokens_usage": tokens_usage,
+    }
 
 
 class KgSearchIn(BaseModel):
@@ -1396,7 +1577,7 @@ class KgSearchIn(BaseModel):
 
 
 @app.post("/api/kg/search")
-async def api_kg_search(body: KgSearchIn):
+async def api_kg_search(body: KgSearchIn, request: Request):
     """Гибридный поиск (BM25 + вектор, RRF) по узлам графа знаний (knowledge + wiki).
 
     Всегда выполняет гибридный поиск по эмбеддингам графа, независимо от того,
@@ -1422,11 +1603,29 @@ async def api_kg_search(body: KgSearchIn):
 
     summary = None
     summary_error = None
+    tokens_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    llm_called = False
     if body.llm_summary and ctx_items:
         try:
-            summary = await llm_summary_kg(q, ctx_items)
+            summary, tokens_usage = await llm_summary_kg(q, ctx_items)
+            llm_called = True
         except Exception as e:
             summary_error = f"{type(e).__name__}: {e}"
+
+    await _log_llm_query(
+        request,
+        route="/api/kg/search",
+        search_type="graph",
+        query_text=q,
+        llm_requested=bool(body.llm_summary),
+        llm_called=llm_called,
+        model_name=LLM_MODEL if llm_called else None,
+        tokens_usage=tokens_usage,
+        found_count=found,
+        used_count=used if llm_called else 0,
+        summary_error=summary_error,
+        meta={"mode": "kg_hybrid", "limit": limit, "max_ctx": max_ctx},
+    )
 
     return {
         "ok": True,
@@ -1437,4 +1636,5 @@ async def api_kg_search(body: KgSearchIn):
         "items": items,
         "summary": summary,
         "summary_error": summary_error,
+        "tokens_usage": tokens_usage,
     }

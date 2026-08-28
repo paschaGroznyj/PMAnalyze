@@ -19,6 +19,42 @@ TS_CONFIG = "russian"
 
 
 # ---------------- Внешние вызовы (cloud.ru) ----------------
+def _extract_tokens_usage(payload: dict) -> dict:
+    """Нормализует usage разных форматов ответа в единый JSON.
+
+    Возвращает ключи: input_tokens, output_tokens, total_tokens.
+    """
+    usage = payload.get("usage") or {}
+
+    # OpenAI-style
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+
+    # Anthropic/messages-style
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+
+    in_tok = input_tokens if input_tokens is not None else prompt_tokens
+    out_tok = output_tokens if output_tokens is not None else completion_tokens
+
+    def _to_int(v):
+        try:
+            return int(v)
+        except Exception:
+            return 0
+
+    in_tok = _to_int(in_tok)
+    out_tok = _to_int(out_tok)
+    total = _to_int(total_tokens) if total_tokens is not None else (in_tok + out_tok)
+
+    return {
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "total_tokens": total,
+    }
+
+
 async def embed_text(text: str) -> list[float]:
     """Один эмбеддинг для запроса/ревью. Кидает исключение при сбое."""
     text = (text or "").strip()
@@ -34,8 +70,11 @@ async def embed_text(text: str) -> list[float]:
         return r.json()["data"][0]["embedding"]
 
 
-async def llm_summary(query: str, snippets: list[dict]) -> str:
-    """Саммари по найденным ревью через claude-haiku-4.5."""
+async def llm_summary(query: str, snippets: list[dict]) -> tuple[str, dict]:
+    """Саммари по найденным ревью через claude-haiku-4.5.
+
+    Возвращает (summary_text, tokens_usage_json).
+    """
     ctx_parts = []
     for i, s in enumerate(snippets, 1):
         ctx_parts.append(f"[{i}] {s.get('title') or 'Без названия'}\n{(s.get('content') or '')[:2500]}")
@@ -60,7 +99,10 @@ async def llm_summary(query: str, snippets: list[dict]) -> str:
             },
         )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        data = r.json()
+        text = data["choices"][0]["message"]["content"]
+        tokens = _extract_tokens_usage(data)
+        return text, tokens
 
 
 def _vec_literal(vec: list[float]) -> str:
@@ -330,8 +372,59 @@ async def search_kg_hybrid(
     return results
 
 
-async def llm_summary_kg(query: str, snippets: list[dict]) -> str:
-    """Саммари по найденным узлам графа знаний."""
+# ---------------- 4. KG-QUICK: live GET-поиск по тексту на бэке (без эмбеддингов) ----------------
+async def search_kg_quick(pool, q: str, limit: int = 20) -> list[dict]:
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+
+    lim = min(150, max(1, int(limit or 20)))
+    async with pool.acquire() as con:
+        k_rows = await con.fetch(
+            """
+            SELECT k.id, left(k.text_knowledge, 160) AS label
+            FROM process_mining.knowledge k
+            WHERE COALESCE(k.status,'active') <> 'merged'
+              AND k.text_knowledge ILIKE '%' || $1 || '%'
+            ORDER BY k.id DESC
+            LIMIT $2
+            """,
+            q,
+            lim,
+        )
+
+        w_rows = await con.fetch(
+            """
+            SELECT w.id, left(w.title, 160) AS label
+            FROM process_mining.wiki_pages w
+            WHERE COALESCE(w.status,'active') <> 'merged'
+              AND (
+                    w.title ILIKE '%' || $1 || '%'
+                 OR COALESCE(w.content_md,'') ILIKE '%' || $1 || '%'
+              )
+            ORDER BY w.id DESC
+            LIMIT $2
+            """,
+            q,
+            lim,
+        )
+
+    out = []
+    for r in k_rows:
+        out.append({"node_id": f"k{int(r['id'])}", "kind": "knowledge", "id": int(r["id"]), "label": r.get("label") or "Knowledge"})
+    for r in w_rows:
+        out.append({"node_id": f"w{int(r['id'])}", "kind": "wiki", "id": int(r["id"]), "label": r.get("label") or "Wiki"})
+
+    # Стабильный deterministic срез
+    out.sort(key=lambda x: (x["kind"], -x["id"]))
+    return out[:lim]
+
+
+async def llm_summary_kg(query: str, snippets: list[dict]) -> tuple[str, dict]:
+    """Саммари по найденным узлам графа знаний.
+
+    Возвращает (summary_text, tokens_usage_json).
+    """
     ctx_parts = []
     for i, s in enumerate(snippets, 1):
         kind = "WIKI" if s.get("kind") == "wiki" else "KNOWLEDGE"
@@ -358,4 +451,7 @@ async def llm_summary_kg(query: str, snippets: list[dict]) -> str:
             },
         )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        data = r.json()
+        text = data["choices"][0]["message"]["content"]
+        tokens = _extract_tokens_usage(data)
+        return text, tokens

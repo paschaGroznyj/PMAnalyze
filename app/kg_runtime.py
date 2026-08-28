@@ -179,21 +179,21 @@ class KGRunManager:
                 self._stop_event = None
             self._graph_cache = {}  # граф изменился — сброс кеша
 
-    async def graph_payload(self, limit_nodes: int = 450, limit_wiki: int = 120) -> dict:
+    async def graph_payload(self, limit_nodes: int = 450, limit_wiki: int = 120, lite: bool = True) -> dict:
         import time
         ln = max(50, min(2000, int(limit_nodes or 450)))
         lw = max(20, min(500, int(limit_wiki or 120)))
-        key = (ln, lw)
+        key = (ln, lw, bool(lite))
         now = time.monotonic()
         hit = self._graph_cache.get(key)
         if hit and (now - hit[0]) < self._graph_cache_ttl:
             return {**hit[1], "cached": True}
-        payload = await self._graph_payload_uncached(ln, lw)
+        payload = await self._graph_payload_uncached(ln, lw, lite=bool(lite))
         if payload.get("ok"):
             self._graph_cache[key] = (now, payload)
         return payload
 
-    async def _graph_payload_uncached(self, limit_nodes: int = 450, limit_wiki: int = 120) -> dict:
+    async def _graph_payload_uncached(self, limit_nodes: int = 450, limit_wiki: int = 120, lite: bool = True) -> dict:
         limit_nodes = max(50, min(2000, int(limit_nodes or 450)))
         limit_wiki = max(20, min(500, int(limit_wiki or 120)))
         async with self.pool.acquire() as con:
@@ -237,17 +237,21 @@ class KGRunManager:
         for r in nodes_rows:
             md = r["metadata_knowledge"] if isinstance(r["metadata_knowledge"], dict) else {}
             text = str(r["text_knowledge"] or "")
-            out_nodes.append({
+            node = {
                 "id": f"k{int(r['id'])}",
                 "kind": "knowledge",
                 "label": text[:72] + ("…" if len(text) > 72 else ""),
-                "title": text,
                 "importance": float(r["importance"] or 0),
                 "status": r["status"],
-                "article_id": md.get("article_id") if isinstance(md, dict) else None,
-                "source": md.get("source") if isinstance(md, dict) else None,
-                "created_at": str(r["created_at"] or ""),
-            })
+            }
+            if not lite:
+                node.update({
+                    "title": text,
+                    "article_id": md.get("article_id") if isinstance(md, dict) else None,
+                    "source": md.get("source") if isinstance(md, dict) else None,
+                    "created_at": str(r["created_at"] or ""),
+                })
+            out_nodes.append(node)
 
         out_edges = []
         for e in edges_rows:
@@ -268,15 +272,19 @@ class KGRunManager:
         for w in wiki_rows:
             wid = int(w["id"])
             title = str(w["title"] or f"Wiki #{wid}")
-            out_nodes.append({
+            node = {
                 "id": f"w{wid}",
                 "kind": "wiki",
                 "label": title[:72] + ("…" if len(title) > 72 else ""),
-                "title": title,
                 "importance": float(w["importance"] or 0),
                 "status": w["status"],
-                "updated_at": str(w["updated_at"] or ""),
-            })
+            }
+            if not lite:
+                node.update({
+                    "title": title,
+                    "updated_at": str(w["updated_at"] or ""),
+                })
+            out_nodes.append(node)
             src_ids = self._coerce_id_list(w["source_ids"])
             for sid in src_ids:
                 try:

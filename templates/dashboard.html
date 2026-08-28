@@ -237,6 +237,7 @@
     .quick-drop{max-width:100%}
     .kg-head{flex-direction:column; align-items:center; text-align:center; gap:8px}
     .kg-actions{width:100%; justify-content:center}
+    .kg-layout-mode{height:40px; padding:8px 10px; font-size:13px}
     .kg-load-full{width:112px; height:112px; font-size:10px; box-shadow:4px 4px 0 var(--ink)}
     .kg-load-full svg{width:30px; height:30px}
     .kg-info{display:block; text-align:center}
@@ -261,6 +262,8 @@
     .kg-search-go{width:36px; height:36px}
     #kg-depth{width:100%}
     .kg-depth-row{align-items:center}
+    .kg-layout-mode{width:100%; height:44px}
+    .kg-layout-wrap{width:100%; text-align:center}
     #art-table{min-width:980px}
     /* Review search summary/list: тач-кнопка и безопасные паддинги */
     .search-summary-collapse{width:36px; height:36px; top:6px; right:6px}
@@ -371,6 +374,14 @@
     border-bottom:2px solid var(--ink); padding-bottom:10px; margin-bottom:14px}
   .kg-head h3{border-bottom:none; padding-bottom:0; margin-bottom:0}
   .kg-actions{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .kg-weak-filter{display:flex; align-items:center; gap:6px; font-size:11px; letter-spacing:.04em; color:var(--ink); cursor:pointer; user-select:none; white-space:nowrap}
+  .kg-weak-filter input{width:16px; height:16px; accent-color:var(--orange); cursor:pointer}
+  .kg-layout-wrap{font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink); opacity:.7}
+  .kg-layout-mode{font-family:'Space Mono',monospace; font-size:12px; color:var(--ink); background:#fff;
+    border:2px solid var(--ink); border-radius:10px; padding:5px 8px; height:32px; cursor:pointer;
+    transition:background .15s ease, transform .1s ease}
+  .kg-layout-mode:hover{background:#F7EFE8}
+  .kg-layout-mode:focus{outline:none; box-shadow:2px 2px 0 var(--orange)}
   .kg-refresh{display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:2px solid var(--ink); border-radius:10px; background:#fff; cursor:pointer; transition:transform .15s ease, background .15s ease}
   .kg-refresh:hover{background:#F7EFE8; transform:rotate(25deg)}
   .kg-refresh:active{transform:scale(.96)}
@@ -437,7 +448,9 @@
   .btn.kg-toggle.running{background:#FFF1E9; border-color:var(--ink); padding-left:44px; padding-right:44px}
   .btn.kg-toggle.running .kg-stop-ico{display:inline-flex}
   .btn.kg-toggle.running:hover{box-shadow:4px 4px 0 #e77a57}
-  #kg-canvas{position:relative; height:520px; border:2px solid var(--ink); background:#fff}
+  #kg-canvas{position:relative; height:760px; border:2px solid var(--ink); background:#fff}
+  @media(max-width:920px){ #kg-canvas{height:620px} }
+  @media(max-width:500px){ #kg-canvas{height:500px} }
   #kg-panel{margin-top:20px; margin-bottom:14px}
 
   /* Обёртка для позиционирования лоадера поверх канваса */
@@ -485,6 +498,82 @@
   .kg-loader-text .dots::after{content:""; animation:kgDots 1.25s steps(4,end) infinite}
   @keyframes kgDots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}100%{content:""}}
 
+/* ==== PKB ==== */
+/* ===== Personal Knowledge Base panel (neo-brutal, demo style) ===== */
+#pkb-panel{margin-top:20px;margin-bottom:14px}
+.pkb-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.pkb-head h3{margin:0}
+.pkb-hint{color:var(--ink);opacity:.6;font-size:12px}
+.pkb-body{display:flex;flex-direction:column;gap:16px}
+.pkb-step{border:2px solid var(--ink);padding:14px 16px;background:var(--paper)}
+.pkb-step-title{font-weight:800;font-size:14px;margin-bottom:4px}
+.pkb-step-desc{color:var(--ink);opacity:.7;font-size:12px;line-height:1.5;margin-bottom:12px}
+.pkb-key-status{margin-top:10px;font-size:12px}
+.pkb-key-status.ok{color:#1e7d46}
+.pkb-key-status.err{color:var(--orange)}
+.pkb-import-row{display:flex;gap:10px;flex-wrap:wrap}
+.pkb-input{flex:1 1 260px;min-width:0;padding:10px 12px;border:2px solid var(--ink);font-size:14px;background:#fff;color:var(--ink);outline:none;transition:box-shadow .1s}
+.pkb-input:focus{box-shadow:3px 3px 0 var(--orange)}
+.pkb-input:disabled{background:#efe8da;cursor:not-allowed}
+.pkb-btn{padding:10px 16px;border:2px solid var(--ink);background:var(--paper);color:var(--ink);font-size:14px;font-weight:700;cursor:pointer;transition:transform .08s,box-shadow .08s;min-height:40px}
+.pkb-btn:hover{transform:translate(-2px,-2px);box-shadow:4px 4px 0 var(--orange)}
+.pkb-btn:active{transform:translate(0,0);box-shadow:none}
+.pkb-btn:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+.pkb-btn-primary{background:var(--orange);color:#fff}
+.pkb-btn-primary:hover{box-shadow:4px 4px 0 var(--ink)}
+/* progress */
+.pkb-progress{border:2px solid var(--ink);padding:14px 16px;background:var(--paper)}
+.pkb-progress-head{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12px;margin-bottom:10px}
+.pkb-bar{height:10px;border:2px solid var(--ink);background:#fff;overflow:hidden}
+.pkb-bar-fill{height:100%;width:0%;background:var(--orange);transition:width .4s ease}
+.pkb-progress-file{margin-top:10px;font-size:12px;color:var(--ink);opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pkb-progress-stats{margin-top:6px;font-size:12px;color:#1e7d46}
+.pkb-errors{margin-top:10px;display:flex;flex-direction:column;gap:4px}
+.pkb-err-item{font-size:11px;color:var(--orange);border:2px solid var(--orange);padding:5px 8px}
+/* ===== modal: карточка в стиле демо ===== */
+.pkb-modal-overlay{position:fixed;inset:0;background:rgba(30,26,22,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px;animation:pkbFade .15s ease}
+.pkb-modal-overlay[hidden]{display:none}
+@keyframes pkbFade{from{opacity:0}to{opacity:1}}
+.pkb-modal{max-width:460px;width:100%;padding:22px 24px;background:var(--paper);border:2px solid var(--ink);box-shadow:8px 8px 0 var(--orange);animation:pkbPop .18s ease}
+@keyframes pkbPop{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.pkb-modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:12px;border-bottom:2px solid var(--ink)}
+.pkb-modal-title{font-size:17px;font-weight:800}
+.pkb-modal-close{border:2px solid var(--ink);background:var(--paper);color:var(--ink);font-size:20px;line-height:1;cursor:pointer;transition:transform .08s,box-shadow .08s;min-width:36px;min-height:36px}
+.pkb-modal-close:hover{transform:translate(-2px,-2px);box-shadow:3px 3px 0 var(--orange);background:var(--peach)}
+.pkb-modal-desc{color:var(--ink);opacity:.75;font-size:13px;line-height:1.55;margin-bottom:16px}
+/* карточки выбора действия */
+.pkb-choice-cards{display:flex;flex-direction:column;gap:10px}
+.pkb-card-btn{display:flex;flex-direction:column;gap:4px;text-align:left;border:2px solid var(--ink);padding:14px 16px;background:#fff;cursor:pointer;transition:transform .08s,box-shadow .08s,background .08s}
+.pkb-card-btn:hover{background:var(--peach);transform:translate(-2px,-2px);box-shadow:4px 4px 0 var(--ink)}
+.pkb-card-btn-title{font-weight:800;font-size:14px}
+.pkb-card-btn-desc{font-size:12px;color:var(--ink);opacity:.7;line-height:1.45}
+/* блок с ключом */
+.pkb-secret-box{display:flex;gap:10px;align-items:center;background:#fff;border:2px solid var(--ink);padding:12px;margin-bottom:14px}
+.pkb-secret{flex:1;font-size:14px;font-weight:700;word-break:break-all;user-select:all;color:var(--ink)}
+.pkb-confirm{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-bottom:18px}
+.pkb-confirm input{width:18px;height:18px;cursor:pointer;accent-color:var(--orange)}
+.pkb-modal-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+#pkb-screen-verify .pkb-input{width:100%;margin-bottom:10px}
+#pkb-modal-status{margin-bottom:12px;min-height:16px}
+/* ===== mobile ===== */
+@media (max-width:920px){
+  .pkb-import-row{flex-direction:column}
+  .pkb-input,.pkb-btn{width:100%}
+}
+@media (max-width:500px){
+  #pkb-panel{margin-top:14px}
+  .pkb-step{padding:12px}
+  .pkb-btn{min-height:44px;font-size:15px}
+  .pkb-input{font-size:16px;padding:12px}
+  .pkb-modal{padding:18px;box-shadow:6px 6px 0 var(--orange)}
+  .pkb-modal-close{min-width:40px;min-height:40px}
+  .pkb-card-btn{padding:14px}
+  .pkb-secret-box{flex-direction:column;align-items:stretch}
+  .pkb-secret-box .pkb-btn{width:100%}
+  .pkb-modal-actions{flex-direction:column-reverse}
+  .pkb-modal-actions .pkb-btn{width:100%}
+  .pkb-progress-head{flex-direction:column;align-items:flex-start;gap:4px}
+}
 </style>
 </head>
 <body>
@@ -593,18 +682,111 @@
     </div>
   </div>
 
+  <!-- ROW 2.4: PERSONAL KNOWLEDGE BASE -->
+  <div class="panel" id="pkb-panel">
+    <div class="pkb-head">
+      <h3>Личная база знаний</h3>
+      <span class="mono pkb-hint" id="pkb-hint">документы -> узлы графа знаний</span>
+    </div>
+
+    <div class="pkb-body">
+      <div class="pkb-step" id="pkb-step-import">
+        <div class="pkb-step-title">Ссылка на архив (Google Drive)</div>
+        <div class="pkb-step-desc">ZIP до 10 MB. Поддержка: pdf, docx, md, txt. Текст документов НЕ хранится — используется только для построения узлов графа. При первой загрузке потребуется секретный ключ.</div>
+        <div class="pkb-import-row">
+          <input class="pkb-input" id="pkb-drive-url" type="text" placeholder="https://drive.google.com/file/d/.../view" autocomplete="off">
+          <button class="pkb-btn pkb-btn-primary" id="pkb-start" type="button">Обработать</button>
+        </div>
+        <div class="pkb-key-status mono" id="pkb-key-status"></div>
+      </div>
+
+      <div class="pkb-progress" id="pkb-progress" hidden>
+        <div class="pkb-progress-head">
+          <span class="mono" id="pkb-progress-status">старт…</span>
+          <span class="mono" id="pkb-progress-count">0 / 0</span>
+        </div>
+        <div class="pkb-bar"><div class="pkb-bar-fill" id="pkb-bar-fill"></div></div>
+        <div class="pkb-progress-file mono" id="pkb-current-file"></div>
+        <div class="pkb-progress-stats mono" id="pkb-progress-stats"></div>
+        <div class="pkb-errors" id="pkb-errors"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: секретный ключ (показ только при первой попытке импорта) -->
+  <div class="pkb-modal-overlay" id="pkb-modal" hidden>
+    <div class="panel pkb-modal">
+      <div class="pkb-modal-head">
+        <div class="pkb-modal-title" id="pkb-modal-title">Секретный ключ</div>
+        <button class="pkb-modal-close" id="pkb-modal-close" type="button" aria-label="Закрыть">&times;</button>
+      </div>
+
+      <!-- Экран выбора действия -->
+      <div class="pkb-modal-screen" id="pkb-screen-choice">
+        <div class="pkb-modal-desc">Для доступа к вашей приватной базе нужен секретный ключ. Сгенерируйте новый или введите существующий.</div>
+        <div class="pkb-choice-cards">
+          <button class="pkb-card-btn" id="pkb-choice-gen" type="button">
+            <span class="pkb-card-btn-title">Сгенерировать ключ</span>
+            <span class="pkb-card-btn-desc">Новый ключ. Показывается один раз — сохраните его.</span>
+          </button>
+          <button class="pkb-card-btn" id="pkb-choice-have" type="button">
+            <span class="pkb-card-btn-title">У меня уже есть ключ</span>
+            <span class="pkb-card-btn-desc">Введите ранее выданный ключ для входа.</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Экран показа нового ключа -->
+      <div class="pkb-modal-screen" id="pkb-screen-secret" hidden>
+        <div class="pkb-modal-desc">Скопируйте и сохраните ключ в надёжном месте. Он показывается только сейчас — восстановить его нельзя.</div>
+        <div class="pkb-secret-box">
+          <code class="pkb-secret" id="pkb-secret-value">—</code>
+          <button class="pkb-btn" id="pkb-copy-secret" type="button">Копировать</button>
+        </div>
+        <label class="pkb-confirm">
+          <input type="checkbox" id="pkb-confirm-saved"> Я скопировал и сохранил ключ
+        </label>
+        <div class="pkb-modal-actions">
+          <button class="pkb-btn" id="pkb-secret-back" type="button">Назад</button>
+          <button class="pkb-btn pkb-btn-primary" id="pkb-modal-ok" type="button" disabled>Готово, продолжить</button>
+        </div>
+      </div>
+
+      <!-- Экран ввода существующего ключа -->
+      <div class="pkb-modal-screen" id="pkb-screen-verify" hidden>
+        <div class="pkb-modal-desc">Вставьте ваш секретный ключ, чтобы продолжить импорт.</div>
+        <input class="pkb-input" id="pkb-key-input" type="text" placeholder="Вставьте ваш ключ" autocomplete="off">
+        <div class="pkb-key-status mono" id="pkb-modal-status"></div>
+        <div class="pkb-modal-actions">
+          <button class="pkb-btn" id="pkb-verify-back" type="button">Назад</button>
+          <button class="pkb-btn pkb-btn-primary" id="pkb-verify-key" type="button">Проверить и продолжить</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
   <!-- ROW 2.5: KNOWLEDGE GRAPH (перемещён перед блоком статей) -->
   <div class="panel" id="kg-panel">
     <div class="kg-head">
       <h3>Knowledge Graph</h3>
       <div class="kg-actions">
         <span class="mono kg-info" id="kg-graph-info">узлы: — · связи: —</span>
+        <label class="mono kg-layout-wrap" for="kg-layout-mode">вид</label>
+        <select id="kg-layout-mode" class="kg-layout-mode" aria-label="Режим раскладки графа">
+          <option value="force">force</option>
+          <option value="hierarchical">hierarchical</option>
+          <option value="radial">radial</option>
+        </select>
         <button class="kg-refresh" id="btn-kg-refresh" title="Обновить граф" aria-label="Обновить граф">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
             <polyline points="21 3 21 9 15 9"/>
           </svg>
         </button>
+        <label class="filter mono kg-weak-filter" title="Скрыть слабые/типовые связи relates_to в реальном времени">
+          <input type="checkbox" id="kg-hide-relates"> скрыть relates_to
+        </label>
         <button class="kg-export" id="btn-kg-export" title="Выгрузить локальный pipeline (zip)" aria-label="Выгрузить локальный pipeline">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 3v10"></path>
@@ -1770,5 +1952,6 @@ setInterval(loadStats, 60000);
 setInterval(loadSearchStats, 60000);
 </script>
 <script src="/static/js/kg_panel.js"></script>
+<script src="/static/js/pkb_panel.js"></script>
 </body>
 </html>

@@ -16,11 +16,16 @@ import csv
 import tempfile
 import zipfile
 import sqlite3
+import hashlib
+import secrets
+import re
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
-from fastapi import FastAPI, BackgroundTasks, Request, Response
+from fastapi import FastAPI, BackgroundTasks, Request, Response, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.pipeline import PMAnalyzePipeline, Settings
 from app.prompts import CATEGORIES
@@ -255,6 +260,108 @@ async def lifespan(app: FastAPI):
         await con.execute("""
             CREATE INDEX IF NOT EXISTS idx_wiki_page_embeddings_tsv
             ON process_mining.wiki_page_embeddings USING GIN(tsv)
+        """)
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.user_private_kb_keys (
+                user_id TEXT PRIMARY KEY,
+                secret_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                rotated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.user_private_kb_imports (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'created',
+                archive_bytes BIGINT,
+                files_total INT NOT NULL DEFAULT 0,
+                files_parsed INT NOT NULL DEFAULT 0,
+                chunks_created INT NOT NULL DEFAULT 0,
+                error_text TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_private_kb_imports_user_created
+            ON process_mining.user_private_kb_imports(user_id, created_at DESC)
+        """)
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.user_private_kb_files (
+                id BIGSERIAL PRIMARY KEY,
+                import_id BIGINT NOT NULL REFERENCES process_mining.user_private_kb_imports(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                file_ext TEXT,
+                file_size BIGINT,
+                text_chars INT,
+                status TEXT NOT NULL DEFAULT 'parsed',
+                error_text TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_private_kb_files_import
+            ON process_mining.user_private_kb_files(import_id)
+        """)
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.user_private_kb_nodes (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                import_id BIGINT NOT NULL REFERENCES process_mining.user_private_kb_imports(id) ON DELETE CASCADE,
+                file_id BIGINT REFERENCES process_mining.user_private_kb_files(id) ON DELETE SET NULL,
+                node_text TEXT NOT NULL,
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_private_kb_nodes_user
+            ON process_mining.user_private_kb_nodes(user_id, created_at DESC)
+        """)
+        # --- private KB graph tables (nodes+edges) + progress columns ---
+        await con.execute("ALTER TABLE process_mining.user_private_kb_imports ADD COLUMN IF NOT EXISTS nodes_created INT NOT NULL DEFAULT 0")
+        await con.execute("ALTER TABLE process_mining.user_private_kb_imports ADD COLUMN IF NOT EXISTS edges_created INT NOT NULL DEFAULT 0")
+        await con.execute("ALTER TABLE process_mining.user_private_kb_imports ADD COLUMN IF NOT EXISTS current_file TEXT")
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.user_private_kb_graph_nodes (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                import_id BIGINT NOT NULL REFERENCES process_mining.user_private_kb_imports(id) ON DELETE CASCADE,
+                file_id BIGINT REFERENCES process_mining.user_private_kb_files(id) ON DELETE SET NULL,
+                label TEXT,
+                text_knowledge TEXT NOT NULL,
+                importance REAL NOT NULL DEFAULT 0.5,
+                tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_private_kb_graph_nodes_user
+            ON process_mining.user_private_kb_graph_nodes(user_id, import_id)
+        """)
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.user_private_kb_graph_edges (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                import_id BIGINT NOT NULL REFERENCES process_mining.user_private_kb_imports(id) ON DELETE CASCADE,
+                source_node_id BIGINT NOT NULL REFERENCES process_mining.user_private_kb_graph_nodes(id) ON DELETE CASCADE,
+                target_node_id BIGINT NOT NULL REFERENCES process_mining.user_private_kb_graph_nodes(id) ON DELETE CASCADE,
+                relation_type TEXT NOT NULL DEFAULT 'relates_to',
+                relevance_score REAL NOT NULL DEFAULT 0.5,
+                importance REAL NOT NULL DEFAULT 0.5,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_user_private_kb_graph_edges_import
+            ON process_mining.user_private_kb_graph_edges(import_id)
         """)
 
     await pipeline.start()
@@ -765,6 +872,495 @@ async def health():
     return {"ok": True, "service": "PMAnalyze"}
 
 
+# ---------------- Private KB import (Google Drive ZIP <= 10MB) ----------------
+PRIVATE_KB_ARCHIVE_MAX_BYTES = int(os.getenv("PRIVATE_KB_ARCHIVE_MAX_BYTES", str(10 * 1024 * 1024)))
+PRIVATE_KB_MAX_TEXT_CHARS = int(os.getenv("PRIVATE_KB_MAX_TEXT_CHARS", "50000"))
+PRIVATE_KB_SECRET_SALT = os.getenv("PRIVATE_KB_SECRET_SALT", "pm-private-kb-salt")
+_PRIVATE_KB_ALLOWED_EXT = {".pdf", ".docx", ".md", ".txt"}
+
+
+class PrivateKBDriveImportReq(BaseModel):
+    drive_url: str = Field(min_length=10, max_length=3000)
+    regenerate_secret: bool = False
+
+
+class PrivateKBVerifyReq(BaseModel):
+    secret_code: str = Field(min_length=6, max_length=128)
+
+
+def _require_user_id(request: Request) -> str:
+    ident = current_identity(request)
+    uid = (ident.get("user_id") or "").strip()
+    if uid:
+        return uid
+    # DEV-fallback: Authentik not wired yet -> derive stable id from visitor cookie / IP
+    vid = _get_visitor_id(request)
+    if vid:
+        return "dev-" + vid
+    ip = _extract_client_ip(request) or "local"
+    return "dev-" + str(ip)
+
+
+def _extract_gdrive_file_id(url: str) -> str | None:
+    u = (url or "").strip()
+    if not u:
+        return None
+    # https://drive.google.com/file/d/<ID>/view
+    m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", u)
+    if m:
+        return m.group(1)
+    # https://drive.google.com/open?id=<ID> or uc?id=<ID>
+    try:
+        q = parse_qs(urlparse(u).query)
+        if q.get("id"):
+            return q["id"][0]
+    except Exception:
+        pass
+    return None
+
+
+def _hash_secret(secret_code: str, salt: str) -> str:
+    return hashlib.sha256((salt + "::" + secret_code).encode("utf-8")).hexdigest()
+
+
+def _generate_secret_code() -> str:
+    # ~20 символов base62/url-safe без спецсимволов
+    return secrets.token_urlsafe(16).replace("-", "A").replace("_", "B")[:20]
+
+
+def _chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[str]:
+    t = (text or "").strip()
+    if not t:
+        return []
+    out = []
+    step = max(200, chunk_size - overlap)
+    i = 0
+    while i < len(t):
+        part = t[i:i + chunk_size].strip()
+        if len(part) >= 80:
+            out.append(part)
+        i += step
+    return out
+
+
+def _read_txt_md(path: Path) -> str:
+    raw = path.read_bytes()
+    for enc in ("utf-8", "utf-8-sig", "cp1251", "latin-1"):
+        try:
+            return raw.decode(enc, errors="ignore")
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="ignore")
+
+
+def _read_docx(path: Path) -> str:
+    try:
+        from docx import Document  # type: ignore
+    except Exception as e:
+        raise RuntimeError(f"python-docx недоступен: {e}")
+    d = Document(str(path))
+    return "\n".join((p.text or "").strip() for p in d.paragraphs if (p.text or "").strip())
+
+
+def _read_pdf(path: Path) -> str:
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception as e:
+        raise RuntimeError(f"pypdf недоступен: {e}")
+    r = PdfReader(str(path))
+    pages = []
+    for pg in r.pages:
+        try:
+            pages.append(pg.extract_text() or "")
+        except Exception:
+            continue
+    return "\n".join(pages)
+
+
+def _safe_extract_zip(zip_path: Path, out_dir: Path):
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            # анти zip-slip
+            target = (out_dir / info.filename).resolve()
+            if not str(target).startswith(str(out_dir.resolve())):
+                continue
+            if info.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info, "r") as src, open(target, "wb") as dst:
+                dst.write(src.read())
+
+
+async def _download_gdrive_zip(url: str) -> tuple[bytes, str]:
+    fid = _extract_gdrive_file_id(url)
+    if not fid:
+        raise HTTPException(status_code=400, detail="Не удалось извлечь file_id из ссылки Google Drive")
+    direct_url = f"https://drive.google.com/uc?export=download&id={fid}"
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as cli:
+        r = await cli.get(direct_url)
+        if r.status_code >= 400:
+            raise HTTPException(status_code=400, detail=f"Google Drive вернул статус {r.status_code}")
+        content = r.content
+        if not content:
+            raise HTTPException(status_code=400, detail="Пустой ответ при скачивании архива")
+        if len(content) > PRIVATE_KB_ARCHIVE_MAX_BYTES:
+            raise HTTPException(status_code=413, detail=f"Архив больше лимита {PRIVATE_KB_ARCHIVE_MAX_BYTES} байт")
+        return content, direct_url
+
+
+# ---------------- Private KB: async import with progress ----------------
+_PRIVATE_KB_JOBS: dict[int, dict] = {}
+
+
+from app.kg_prompts import build_knowledge_extraction_prompt as _pkb_build_extract
+from app.kg_prompts import build_relation_inference_prompt as _pkb_build_rel
+from app.kg_prompts import RELATION_TYPES as _PKB_REL_TYPES
+
+
+async def _pkb_process_import(import_id: int, user_id: str, drive_url: str):
+    job = _PRIVATE_KB_JOBS.setdefault(import_id, {})
+    job.update({"status": "downloading", "files_total": 0, "files_done": 0,
+                "current_file": None, "nodes_created": 0, "edges_created": 0, "errors": []})
+    allowed_rel = set(_PKB_REL_TYPES)
+    try:
+        archive_bytes, resolved_url = await _download_gdrive_zip(drive_url)
+        async with pool.acquire() as con:
+            await con.execute(
+                "UPDATE process_mining.user_private_kb_imports SET status=$2, source_url=$3, archive_bytes=$4, updated_at=NOW() WHERE id=$1",
+                import_id, "unzipping", resolved_url, len(archive_bytes),
+            )
+
+        with tempfile.TemporaryDirectory(prefix="pkb_") as td:
+            zpath = Path(td) / "bundle.zip"
+            xdir = Path(td) / "unzipped"
+            xdir.mkdir(parents=True, exist_ok=True)
+            zpath.write_bytes(archive_bytes)
+            _safe_extract_zip(zpath, xdir)
+
+            files = [fp for fp in xdir.rglob("*") if fp.is_file() and fp.suffix.lower() in _PRIVATE_KB_ALLOWED_EXT]
+            if not files:
+                raise RuntimeError("В архиве не найдено поддерживаемых файлов: pdf/docx/md/txt")
+
+            job["files_total"] = len(files)
+            job["status"] = "processing"
+            async with pool.acquire() as con:
+                await con.execute(
+                    "UPDATE process_mining.user_private_kb_imports SET status=$2, files_total=$3, updated_at=NOW() WHERE id=$1",
+                    import_id, "processing", len(files),
+                )
+
+            files_parsed = 0
+            total_nodes = 0
+            total_edges = 0
+
+            for fp in files:
+                fname = str(fp.relative_to(xdir))[:500]
+                job["current_file"] = fname
+                async with pool.acquire() as con:
+                    await con.execute(
+                        "UPDATE process_mining.user_private_kb_imports SET current_file=$2, updated_at=NOW() WHERE id=$1",
+                        import_id, fname,
+                    )
+                ext = fp.suffix.lower()
+                size_b = fp.stat().st_size
+                fstatus = "parsed"
+                ferr = None
+                txt = ""
+                try:
+                    if ext in (".txt", ".md"):
+                        txt = _read_txt_md(fp)
+                    elif ext == ".docx":
+                        txt = _read_docx(fp)
+                    elif ext == ".pdf":
+                        txt = _read_pdf(fp)
+                except Exception as e:
+                    fstatus = "error"
+                    ferr = str(e)[:1000]
+
+                txt = (txt or "").strip()
+                if len(txt) > PRIVATE_KB_MAX_TEXT_CHARS:
+                    txt = txt[:PRIVATE_KB_MAX_TEXT_CHARS]
+                text_chars = len(txt)
+
+                async with pool.acquire() as con:
+                    file_id = await con.fetchval(
+                        "INSERT INTO process_mining.user_private_kb_files("
+                        "import_id, user_id, file_name, file_ext, file_size, text_chars, status, error_text) "
+                        "VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
+                        import_id, user_id, fname, ext, size_b, text_chars, fstatus, ferr,
+                    )
+
+                if fstatus != "parsed" or text_chars < 80:
+                    if ferr:
+                        job["errors"].append({"file": fname, "error": ferr})
+                    job["files_done"] += 1
+                    continue
+
+                files_parsed += 1
+
+                try:
+                    source_meta = json.dumps({"file_name": fp.name, "scope": "private_kb", "user_id": user_id}, ensure_ascii=False)
+                    ex_prompt = _pkb_build_extract(source_text=txt, source_meta=source_meta)
+                    ex_raw = await pipeline._llm(pipeline.settings.review_model, ex_prompt, max_tokens=2200)
+                    ex_data = pipeline._extract_json(ex_raw) or {}
+                    atoms = ex_data.get("atoms") if isinstance(ex_data, dict) else []
+                    if not isinstance(atoms, list):
+                        atoms = []
+                except Exception as e:
+                    job["errors"].append({"file": fname, "error": "extraction: " + str(e)})
+                    atoms = []
+
+                inserted_nodes = []
+                for atom in atoms[:30]:
+                    if not isinstance(atom, dict):
+                        continue
+                    text_k = str(atom.get("text_knowledge") or "").strip()
+                    if len(text_k) < 20:
+                        continue
+                    try:
+                        imp = max(0.0, min(1.0, float(atom.get("importance", 0.5) or 0.5)))
+                    except Exception:
+                        imp = 0.5
+                    tags = atom.get("tags") if isinstance(atom.get("tags"), list) else []
+                    label = text_k[:80]
+                    md = {"file_name": fp.name, "import_id": int(import_id), "kind": "private_kb_node"}
+                    async with pool.acquire() as con:
+                        nid = await con.fetchval(
+                            "INSERT INTO process_mining.user_private_kb_graph_nodes("
+                            "user_id, import_id, file_id, label, text_knowledge, importance, tags, metadata) "
+                            "VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb) RETURNING id",
+                            user_id, import_id, file_id, label, text_k, imp,
+                            json.dumps(tags, ensure_ascii=False), json.dumps(md, ensure_ascii=False),
+                        )
+                    inserted_nodes.append({"id": int(nid), "text": text_k})
+                    total_nodes += 1
+                    job["nodes_created"] = total_nodes
+
+                if len(inserted_nodes) >= 2:
+                    try:
+                        rel_prompt = _pkb_build_rel(json.dumps(inserted_nodes, ensure_ascii=False))
+                        rel_raw = await pipeline._llm(pipeline.settings.review_model, rel_prompt, max_tokens=1800)
+                        rel_data = pipeline._extract_json(rel_raw) or {}
+                        rels = rel_data.get("relations") if isinstance(rel_data, dict) else []
+                        if not isinstance(rels, list):
+                            rels = []
+                    except Exception as e:
+                        job["errors"].append({"file": fname, "error": "relations: " + str(e)})
+                        rels = []
+                    id_set = {n["id"] for n in inserted_nodes}
+                    for rr in rels[:120]:
+                        if not isinstance(rr, dict):
+                            continue
+                        try:
+                            sid = int(rr.get("source_id"))
+                            tid = int(rr.get("target_id"))
+                        except Exception:
+                            continue
+                        if sid == tid or sid not in id_set or tid not in id_set:
+                            continue
+                        rtype = str(rr.get("relation_type") or "relates_to").strip()
+                        if rtype not in allowed_rel:
+                            rtype = "relates_to"
+                        try:
+                            rscore = max(0.0, min(1.0, float(rr.get("relevance_score", 0.5) or 0.5)))
+                        except Exception:
+                            rscore = 0.5
+                        try:
+                            rimp = max(0.0, min(1.0, float(rr.get("importance", 0.5) or 0.5)))
+                        except Exception:
+                            rimp = 0.5
+                        async with pool.acquire() as con:
+                            await con.execute(
+                                "INSERT INTO process_mining.user_private_kb_graph_edges("
+                                "user_id, import_id, source_node_id, target_node_id, "
+                                "relation_type, relevance_score, importance) "
+                                "VALUES($1,$2,$3,$4,$5,$6,$7)",
+                                user_id, import_id, sid, tid, rtype, rscore, rimp,
+                            )
+                        total_edges += 1
+                        job["edges_created"] = total_edges
+
+                job["files_done"] += 1
+                async with pool.acquire() as con:
+                    await con.execute(
+                        "UPDATE process_mining.user_private_kb_imports "
+                        "SET files_parsed=$2, nodes_created=$3, edges_created=$4, updated_at=NOW() WHERE id=$1",
+                        import_id, files_parsed, total_nodes, total_edges,
+                    )
+
+            async with pool.acquire() as con:
+                await con.execute(
+                    "UPDATE process_mining.user_private_kb_imports "
+                    "SET status='done', current_file=NULL, files_parsed=$2, "
+                    "nodes_created=$3, edges_created=$4, updated_at=NOW() WHERE id=$1",
+                    import_id, files_parsed, total_nodes, total_edges,
+                )
+            job["status"] = "done"
+            job["current_file"] = None
+    except Exception as e:
+        emsg = (type(e).__name__ + ": " + str(e))[:2000]
+        job["status"] = "error"
+        job["errors"].append({"file": None, "error": emsg})
+        try:
+            async with pool.acquire() as con:
+                await con.execute(
+                    "UPDATE process_mining.user_private_kb_imports SET status='error', error_text=$2, updated_at=NOW() WHERE id=$1",
+                    import_id, emsg,
+                )
+        except Exception:
+            pass
+
+
+@app.post("/api/private-kb/import/start")
+async def private_kb_import_start(req: PrivateKBDriveImportReq, request: Request):
+    user_id = _require_user_id(request)
+    async with pool.acquire() as con:
+        has_key = await con.fetchval(
+            "SELECT 1 FROM process_mining.user_private_kb_keys WHERE user_id=$1 AND is_active=TRUE", user_id
+        )
+        if not has_key:
+            raise HTTPException(status_code=403, detail="Секретный ключ не инициализирован. Сначала сгенерируйте ключ.")
+        import_id = await con.fetchval(
+            "INSERT INTO process_mining.user_private_kb_imports(user_id, source_url, status, updated_at) "
+            "VALUES($1,$2,'created',NOW()) RETURNING id",
+            user_id, req.drive_url.strip(),
+        )
+    asyncio.create_task(_pkb_process_import(int(import_id), user_id, req.drive_url.strip()))
+    return {"ok": True, "import_id": int(import_id), "status": "created"}
+
+
+@app.get("/api/private-kb/import/status")
+async def private_kb_import_status(request: Request, import_id: int):
+    user_id = _require_user_id(request)
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            "SELECT id, status, files_total, files_parsed, nodes_created, edges_created, "
+            "current_file, error_text, updated_at "
+            "FROM process_mining.user_private_kb_imports WHERE id=$1 AND user_id=$2",
+            import_id, user_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="import not found")
+    job = _PRIVATE_KB_JOBS.get(int(import_id), {})
+    return {
+        "ok": True,
+        "import_id": int(row["id"]),
+        "status": row["status"],
+        "files_total": int(row["files_total"] or 0),
+        "files_done": int(job.get("files_done", row["files_parsed"] or 0)),
+        "files_parsed": int(row["files_parsed"] or 0),
+        "nodes_created": int(row["nodes_created"] or 0),
+        "edges_created": int(row["edges_created"] or 0),
+        "current_file": job.get("current_file", row["current_file"]),
+        "errors": job.get("errors", []),
+        "error_text": row["error_text"],
+    }
+
+
+@app.post("/api/private-kb/secret/generate")
+async def private_kb_secret_generate(request: Request):
+    user_id = _require_user_id(request)
+    issued_secret = _generate_secret_code()
+    salt = secrets.token_hex(8)
+    sh = _hash_secret(issued_secret, PRIVATE_KB_SECRET_SALT + ":" + salt)
+    async with pool.acquire() as con:
+        await con.execute(
+            "INSERT INTO process_mining.user_private_kb_keys(user_id, secret_hash, salt, is_active, updated_at, rotated_at) "
+            "VALUES($1,$2,$3,TRUE,NOW(),NOW()) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "secret_hash=EXCLUDED.secret_hash, salt=EXCLUDED.salt, "
+            "is_active=TRUE, updated_at=NOW(), rotated_at=NOW()",
+            user_id, sh, salt,
+        )
+    return {"ok": True, "secret_code": issued_secret,
+            "note": "Показывается один раз. Сохраните ключ — восстановить его нельзя."}
+
+
+@app.post("/api/private-kb/verify")
+async def private_kb_verify(req: PrivateKBVerifyReq, request: Request):
+    user_id = _require_user_id(request)
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            "SELECT secret_hash, salt, is_active FROM process_mining.user_private_kb_keys WHERE user_id=$1",
+            user_id,
+        )
+    if not row or not row.get("is_active"):
+        return {"ok": False, "verified": False, "reason": "secret_not_initialized"}
+    expected = row["secret_hash"]
+    salt = row["salt"]
+    got = _hash_secret(req.secret_code.strip(), PRIVATE_KB_SECRET_SALT + ":" + salt)
+    return {"ok": True, "verified": secrets.compare_digest(expected, got)}
+
+
+@app.post("/api/private-kb/nodes")
+async def private_kb_nodes(req: PrivateKBVerifyReq, request: Request, limit: int = 50, offset: int = 0):
+    user_id = _require_user_id(request)
+    limit = max(1, min(200, int(limit or 50)))
+    offset = max(0, int(offset or 0))
+
+    async with pool.acquire() as con:
+        row = await con.fetchrow(
+            "SELECT secret_hash, salt, is_active FROM process_mining.user_private_kb_keys WHERE user_id=$1",
+            user_id,
+        )
+        if not row or not row.get("is_active"):
+            return {"ok": False, "error": "secret_not_initialized"}
+        got = _hash_secret(req.secret_code.strip(), PRIVATE_KB_SECRET_SALT + ":" + row["salt"])
+        if not secrets.compare_digest(row["secret_hash"], got):
+            return {"ok": False, "error": "forbidden"}
+
+        total = await con.fetchval(
+            "SELECT COUNT(*)::int FROM process_mining.user_private_kb_nodes WHERE user_id=$1",
+            user_id,
+        )
+        rows = await con.fetch(
+            """
+            SELECT id, import_id, file_id, node_text, metadata, created_at
+            FROM process_mining.user_private_kb_nodes
+            WHERE user_id=$1
+            ORDER BY id DESC
+            LIMIT $2 OFFSET $3
+            """,
+            user_id, limit, offset,
+        )
+
+    items = []
+    for r in rows:
+        items.append({
+            "id": int(r["id"]),
+            "import_id": int(r["import_id"]),
+            "file_id": int(r["file_id"]) if r.get("file_id") is not None else None,
+            "text": str(r["node_text"] or ""),
+            "metadata": r["metadata"] if isinstance(r["metadata"], dict) else {},
+            "created_at": str(r["created_at"]),
+        })
+    return {"ok": True, "user_id": user_id, "total": int(total or 0), "limit": limit, "offset": offset, "items": items}
+
+
+@app.get("/api/private-kb/stats")
+async def private_kb_stats(request: Request):
+    user_id = _require_user_id(request)
+    async with pool.acquire() as con:
+        imports = await con.fetchrow(
+            """
+            SELECT COUNT(*)::int AS total_imports,
+                   COALESCE(SUM(files_total),0)::int AS files_total,
+                   COALESCE(SUM(files_parsed),0)::int AS files_parsed,
+                   COALESCE(SUM(chunks_created),0)::int AS chunks_created
+            FROM process_mining.user_private_kb_imports
+            WHERE user_id=$1 AND status='done'
+            """,
+            user_id,
+        )
+        key_exists = await con.fetchval(
+            "SELECT 1 FROM process_mining.user_private_kb_keys WHERE user_id=$1 AND is_active=TRUE",
+            user_id,
+        )
+    return {"ok": True, "user_id": user_id, "has_secret": bool(key_exists), **dict(imports or {})}
+
+
 # ---------------- Local pipeline export ----------------
 _LOCAL_EXPORT_TABLES = [
     "knowledge",
@@ -772,6 +1368,8 @@ _LOCAL_EXPORT_TABLES = [
     "knowledge_review",
     "knowledge_tags",
     "knowledge_relations",
+    "entity_relations",
+    "wiki_pages",
 ]
 
 
@@ -850,36 +1448,44 @@ async def local_pipeline_export(mode: str = "sqlite_csv"):
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     base_dir = os.path.join(BASE_DIR, "local_pipeline_6_4_10")
-    include_files = [
-        os.path.join(base_dir, "local_pm_pipeline_6_4_10.ipynb"),
-        os.path.join(base_dir, "requirements.txt"),
-        os.path.join(base_dir, "README.md"),
-        os.path.join(base_dir, ".env.example"),
-    ]
+    app_dir = os.path.join(base_dir, "local_graph_app")
 
     with tempfile.TemporaryDirectory(prefix="pma_local_export_") as td:
         meta = await _export_local_tables(td, mode)
-        zip_path = os.path.join(td, f"local_pipeline_{mode}_{ts}.zip")
+        zip_path = os.path.join(td, f"local_graph_app_{mode}_{ts}.zip")
 
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            # 1) only FastAPI app files (no root notebook/pipeline files)
+            if os.path.isdir(app_dir):
+                for root, dirs, files in os.walk(app_dir):
+                    dirs[:] = [d for d in dirs if d != "__pycache__"]
+                    for name in files:
+                        if name.endswith(".pyc"):
+                            continue
+                        full = os.path.join(root, name)
+                        rel = os.path.relpath(full, app_dir)
+                        # generated fresh below
+                        if rel.replace('\\', '/').startswith('data/'):
+                            continue
+                        if name == "pm_knowledge_local.sqlite":
+                            continue
+                        zf.write(full, arcname=os.path.join("local_graph_app", rel))
+
+            # 2) generated data goes inside local_graph_app/data
             if mode == "sqlite_csv":
                 sp = meta.get("sqlite_path")
                 if sp and os.path.exists(sp):
-                    zf.write(sp, arcname="pm_knowledge_local.sqlite")
+                    zf.write(sp, arcname="local_graph_app/data/pm_knowledge_local.sqlite")
 
             csv_dir = os.path.join(td, "csv")
             if os.path.isdir(csv_dir):
                 for name in sorted(os.listdir(csv_dir)):
                     pp = os.path.join(csv_dir, name)
                     if os.path.isfile(pp):
-                        zf.write(pp, arcname=name)
-
-            for fp in include_files:
-                if os.path.isfile(fp):
-                    zf.write(fp, arcname=os.path.basename(fp))
+                        zf.write(pp, arcname=f"local_graph_app/data/{name}")
 
             zf.writestr(
-                "manifest.json",
+                "local_graph_app/manifest.json",
                 json.dumps(
                     {
                         "ok": True,
@@ -896,7 +1502,7 @@ async def local_pipeline_export(mode: str = "sqlite_csv"):
             data = f.read()
 
     headers = {
-        "Content-Disposition": f'attachment; filename="local_pipeline_{mode}_{ts}.zip"'
+        "Content-Disposition": f'attachment; filename="local_graph_app_{mode}_{ts}.zip"'
     }
     return StreamingResponse(io.BytesIO(data), media_type="application/zip", headers=headers)
 

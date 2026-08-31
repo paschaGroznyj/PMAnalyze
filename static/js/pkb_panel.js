@@ -7,6 +7,32 @@
   var keyConfirmed = false;   // ключ подтверждён в текущей сессии
   var pendingUrl = null;      // ссылка, которую ждём запустить после ключа
 
+  // ===== PKB debug logging =====
+  var PKB_DBG = true;
+  try {
+    if (window && window.localStorage && window.localStorage.getItem("pkb_debug") === "0") PKB_DBG = false;
+    if (window && window.location && /(?:\?|&)pkb_debug=0(?:&|$)/.test(window.location.search)) PKB_DBG = false;
+    if (window && window.location && /(?:\?|&)pkb_debug=1(?:&|$)/.test(window.location.search)) PKB_DBG = true;
+  } catch (e) {}
+  function pkbDbg() {
+    if (!PKB_DBG || !window.console) return;
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift("[PKB][DBG]");
+    try { console.log.apply(console, args); } catch (e) {}
+  }
+  function pkbDbgWarn() {
+    if (!PKB_DBG || !window.console) return;
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift("[PKB][WARN]");
+    try { console.warn.apply(console, args); } catch (e) {}
+  }
+  function pkbDbgErr() {
+    if (!PKB_DBG || !window.console) return;
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift("[PKB][ERR]");
+    try { console.error.apply(console, args); } catch (e) {}
+  }
+
   function setKeyStatus(msg, kind) {
     var el = $("pkb-key-status");
     if (!el) return;
@@ -340,7 +366,15 @@
 
   function pkbBuildNetwork(nodes, edges) {
     var host = $("pkb-kg-canvas");
-    if (!host || !window.vis) return;
+    pkbDbg("pkbBuildNetwork:start", {hasHost: !!host, hasVis: !!window.vis, nodes: (nodes||[]).length, edges: (edges||[]).length});
+    if (!host || !window.vis) {
+      pkbDbgErr("pkbBuildNetwork:abort", {reason: !host ? "no_host" : "no_vis"});
+      return;
+    }
+    try {
+      var rect = host.getBoundingClientRect();
+      pkbDbg("pkbBuildNetwork:hostRect", {w: Math.round(rect.width), h: Math.round(rect.height), hidden: host.hidden});
+    } catch (e) {}
 
     var visNodes = nodes.map(function (n) {
       return {
@@ -378,50 +412,85 @@
       nodes: { scaling: { min: 12, max: 34 } }
     };
 
-    if (pkbNet) { try { pkbNet.destroy(); } catch (e) {} pkbNet = null; }
+    if (pkbNet) {
+      pkbDbg("pkbBuildNetwork:destroyPrevious");
+      try { pkbNet.destroy(); } catch (e) { pkbDbgErr("pkbBuildNetwork:destroyPrevious:error", e && e.message ? e.message : e); }
+      pkbNet = null;
+    }
     pkbNet = new vis.Network(host, { nodes: pkbNodesDS, edges: pkbEdgesDS }, options);
+    pkbDbg("pkbBuildNetwork:networkCreated");
 
     // ЕДИНСТВЕННЫЙ путь: событие vis "click". Никаких нативных canvas-listener'ов
     // с preventDefault — именно они ломали drag/zoom и уводили клик в слайдер.
     pkbNet.on("click", function (params) {
       var nid = null;
+      var at = null;
       if (params && params.nodes && params.nodes.length) {
         nid = params.nodes[0];
       } else if (params && params.pointer && params.pointer.DOM) {
         // fallback: params.nodes бывает пуст, если клик распознан как микро-drag —
         // достаём узел прямо из координат указателя
-        try { nid = pkbNet.getNodeAt(params.pointer.DOM); } catch (e) {}
+        try { at = pkbNet.getNodeAt(params.pointer.DOM); nid = at; } catch (e) {}
       }
+      pkbDbg("vis:click", {nodes: params && params.nodes ? params.nodes : [], edges: params && params.edges ? params.edges : [], pointer: params && params.pointer ? params.pointer.DOM : null, getNodeAt: at, rawNode: nid});
       nid = pkbNormNodeId(nid);
       if (nid) {
+        pkbDbg("vis:click->focus", {nid: nid});
         pkbFocusNode(nid, true);
       } else {
+        pkbDbgWarn("vis:click->emptyNode closeCard");
         pkbCloseCard();
       }
     });
     // selectNode — ещё один надёжный источник, если click проглотил узел
     pkbNet.on("selectNode", function (params) {
       var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
+      pkbDbg("vis:selectNode", {nodes: params && params.nodes ? params.nodes : [], rawNode: nid});
       nid = pkbNormNodeId(nid);
       if (nid) pkbFocusNode(nid, true);
     });
     pkbNet.on("doubleClick", function (params) {
       var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
+      pkbDbg("vis:doubleClick", {nodes: params && params.nodes ? params.nodes : [], rawNode: nid});
       nid = pkbNormNodeId(nid);
       if (nid) pkbFocusNode(nid, true);
     });
     pkbNet.on("hold", function (params) {
       var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
+      pkbDbg("vis:hold", {nodes: params && params.nodes ? params.nodes : [], rawNode: nid});
       nid = pkbNormNodeId(nid);
       if (nid) pkbFocusNode(nid, true);
     });
 
+    // дополнительная телеметрия vis событий
+    pkbNet.on("select", function (params) { pkbDbg("vis:select", params || {}); });
+    pkbNet.on("deselectNode", function (params) { pkbDbg("vis:deselectNode", params || {}); });
+    pkbNet.on("dragStart", function (params) { pkbDbg("vis:dragStart", params || {}); });
+    pkbNet.on("dragging", function (params) { if (params && params.nodes && params.nodes.length) pkbDbg("vis:draggingNode", params.nodes); });
+    pkbNet.on("dragEnd", function (params) { pkbDbg("vis:dragEnd", params || {}); });
+    pkbNet.on("zoom", function (params) { pkbDbg("vis:zoom", {scale: params && params.scale}); });
+    pkbNet.on("release", function (params) { pkbDbg("vis:release", params || {}); });
+    pkbNet.once("stabilized", function (iter) { pkbDbg("vis:stabilized", {iterations: iter}); });
+
+    // сырые DOM-события на холсте/контейнере
+    ["pointerdown","pointerup","click","mousedown","mouseup","touchstart","touchend"].forEach(function (evt) {
+      host.addEventListener(evt, function (e) {
+        var t = e && e.target;
+        pkbDbg("dom:" + evt, {target: t ? (t.tagName + (t.className ? "." + String(t.className).replace(/\s+/g,".") : "")) : null, x: e.clientX, y: e.clientY});
+      }, true);
+    });
+
     pkbBuilt = true;
+    pkbDbg("pkbBuildNetwork:ready", {pkbBuilt: pkbBuilt});
   }
 
   function pkbFocusNode(nodeId, openCard) {
     nodeId = pkbNormNodeId(nodeId);
-    if (!nodeId || !pkbNet) return;
+    pkbDbg("pkbFocusNode:call", {nodeId: nodeId, openCard: !!openCard, hasNet: !!pkbNet});
+    if (!nodeId || !pkbNet) {
+      pkbDbgWarn("pkbFocusNode:skip", {nodeId: nodeId, hasNet: !!pkbNet});
+      return;
+    }
     try {
       pkbNet.selectNodes([nodeId]);
       pkbNet.focus(nodeId, { scale: 1.15, animation: { duration: 500, easingFunction: "easeInOutQuad" } });
@@ -437,7 +506,10 @@
         }, 1200);
       } catch (e) {}
     }
-    if (openCard) pkbOpenCard(nodeId);
+    if (openCard) {
+      pkbDbg("pkbFocusNode:openCard", {nodeId: nodeId});
+      pkbOpenCard(nodeId);
+    }
   }
 
   function pkbEnableCardScrollIsolation(card) {
@@ -452,11 +524,18 @@
   async function pkbOpenCard(nodeId) {
     nodeId = pkbNormNodeId(nodeId);
     var card = $("pkb-kg-card");
-    if (!card || !nodeId) return;
+    pkbDbg("pkbOpenCard:start", {nodeId: nodeId, hasCard: !!card});
+    if (!card || !nodeId) {
+      pkbDbgWarn("pkbOpenCard:skip", {nodeId: nodeId, hasCard: !!card});
+      return;
+    }
     card.hidden = false;
     card.innerHTML = '<div class="mono" style="padding:6px 0">загрузка карточки…</div>';
     try {
-      var d = await pkbApiGet("/api/private-kb/graph/card?node_id=" + encodeURIComponent(nodeId));
+      var cardUrl = "/api/private-kb/graph/card?node_id=" + encodeURIComponent(nodeId);
+      pkbDbg("pkbOpenCard:fetch", cardUrl);
+      var d = await pkbApiGet(cardUrl);
+      pkbDbg("pkbOpenCard:ok", {node_id: d && d.node_id, hasText: !!(d && (d.text || d.text_knowledge)), neighbors: d && d.neighbors ? d.neighbors.length : 0});
       if (d && d.ok === false) throw new Error(d.error || "not_found");
       var tags = (d.tags || []).map(function (t) { return "#" + t; }).join(" ");
       var neigh = (d.neighbors || []).map(function (nb) {
@@ -476,6 +555,7 @@
         b.addEventListener("click", function () { pkbFocusNode(b.getAttribute("data-nid"), true); });
       });
     } catch (e) {
+      pkbDbgErr("pkbOpenCard:error", {nodeId: nodeId, message: e && e.message ? e.message : String(e)});
       card.innerHTML =
         '<button class="pkb-kg-card-close" type="button" aria-label="Закрыть">×</button>' +
         '<div class="mono">ошибка карточки: ' + pkbEscHtml(e.message) + '</div>';
@@ -556,6 +636,7 @@
   }
 
   async function pkbLoadFull() {
+    pkbDbg("pkbLoadFull:start");
     var loader = $("pkb-kg-loader");
     var btn = $("pkb-kg-load-full");
     if (btn) btn.style.display = "none";
@@ -568,6 +649,7 @@
       if (c) c.textContent = "узлов: " + (d.counts ? d.counts.nodes : (d.nodes || []).length) +
         " · связей: " + (d.counts ? d.counts.edges : (d.edges || []).length);
     } catch (e) {
+      pkbDbgErr("pkbLoadFull:error", e && e.message ? e.message : e);
       if (btn) btn.style.display = "";
       var cc = $("pkb-kg-counts");
       if (cc) cc.textContent = "ошибка: " + e.message;
@@ -609,6 +691,7 @@
     });
   }
   async function pkbSearch() {
+    pkbDbg("pkbSearch:start");
     var q = (($("pkb-kg-query") || {}).value || "").trim();
     if (!q) { if (pkbBuilt) pkbApplySelection([], null); return; }
     var depth = parseInt((($("pkb-kg-depth") || {}).value) || "1", 10);
@@ -704,6 +787,7 @@
 
   // ---- init ----
   function pkbInit() {
+    pkbDbg("pkbInit", {debug: PKB_DBG});
     bindModal();
     bindStart();
     bindOpenGraph();

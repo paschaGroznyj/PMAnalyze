@@ -581,7 +581,70 @@
   .pkb-progress-head{flex-direction:column;align-items:flex-start;gap:4px}
 }
 
-  /* PKB-GRAPH-CSS */
+  
+
+/* ===== PKB panel restyle to match KG panel (without changing PKB graph UX) ===== */
+#pkb-panel{margin-top:20px; margin-bottom:14px}
+#pkb-panel .pkb-head{
+  display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+  border-bottom:2px solid var(--ink); padding-bottom:10px; margin-bottom:14px;
+}
+#pkb-panel .pkb-head h3{margin:0}
+#pkb-panel .pkb-hint{font-size:10px; color:#6b6055; letter-spacing:.04em}
+#pkb-panel .pkb-open-graph-btn{
+  margin-left:auto; min-height:36px; padding:8px 14px; font-family:'Space Mono',monospace;
+  border:2px solid var(--ink); background:#fff; color:var(--ink); cursor:pointer;
+  transition:transform .1s ease, box-shadow .1s ease, background .1s ease;
+}
+#pkb-panel .pkb-open-graph-btn:hover{background:#F7EFE8; transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--ink)}
+
+#pkb-panel .pkb-step{
+  border:2px solid var(--ink); background:rgba(30,26,22,.03); padding:12px; margin-bottom:12px; overflow:hidden;
+}
+#pkb-panel .pkb-step-title{
+  font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+  color:#6b6055; margin-bottom:8px;
+}
+#pkb-panel .pkb-step-desc{font-size:12px; color:#6b6055; line-height:1.5; margin-bottom:10px}
+#pkb-panel .pkb-import-row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+#pkb-panel .pkb-input{
+  flex:1; min-width:260px; padding:12px 14px; box-sizing:border-box;
+  border:2px solid var(--ink); background:#fff; color:var(--ink);
+  font-family:'Space Mono',monospace; font-size:13px;
+}
+#pkb-panel .pkb-input:focus{outline:none; box-shadow:3px 3px 0 var(--orange)}
+#pkb-panel .pkb-btn{
+  border:2px solid var(--ink); background:#fff; color:var(--ink); font-weight:700;
+  min-height:36px; padding:8px 14px; cursor:pointer;
+}
+#pkb-panel .pkb-btn:hover{background:#F7EFE8; box-shadow:3px 3px 0 var(--ink); transform:none}
+#pkb-panel .pkb-btn-primary{background:var(--yellow)}
+#pkb-panel .pkb-btn-primary:hover{background:var(--orange); color:#fff; box-shadow:3px 3px 0 var(--ink)}
+#pkb-panel .pkb-key-status{font-size:11px; letter-spacing:.04em}
+
+#pkb-panel .pkb-progress{
+  border:2px dashed var(--ink); background:#fff; padding:10px 12px;
+}
+#pkb-panel .pkb-progress-head{font-size:11px; margin-bottom:8px}
+#pkb-panel .pkb-bar{height:8px; border:2px solid var(--ink); background:#fff}
+#pkb-panel .pkb-progress-file{font-size:11px}
+#pkb-panel .pkb-progress-stats{font-size:11px; color:#6b6055}
+#pkb-panel .pkb-err-item{font-size:11px; padding:6px 8px; background:#fff}
+
+@media(max-width:920px){
+  #pkb-panel .pkb-import-row{flex-direction:column; align-items:stretch}
+  #pkb-panel .pkb-input{width:100%; min-width:0}
+  #pkb-panel .pkb-btn{width:100%}
+}
+@media(max-width:500px){
+  #pkb-panel{margin-top:14px}
+  #pkb-panel .pkb-head{gap:8px}
+  #pkb-panel .pkb-open-graph-btn{margin-left:0; width:100%; min-height:40px}
+  #pkb-panel .pkb-input{font-size:16px; padding:12px}
+  #pkb-panel .pkb-btn{min-height:44px; font-size:15px}
+}
+
+/* PKB-GRAPH-CSS */
   .pkb-graph-wrap{margin-top:18px; border-top:2px dashed var(--ink); padding-top:16px}
   .pkb-kg-head{border:2px solid var(--ink); background:rgba(30,26,22,.03); padding:12px; margin-bottom:12px; display:flex; flex-direction:column; gap:10px; overflow:hidden}
   .pkb-kg-info{display:flex; align-items:center; justify-content:space-between; gap:10px}

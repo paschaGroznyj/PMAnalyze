@@ -360,23 +360,27 @@
   function pkbCloseCard() {
     var card = $("pkb-kg-card");
     if (card) { card.hidden = true; card.innerHTML = ""; }
+    var modal = $("pkb-card-modal");
+    if (modal) modal.classList.remove("on");
   }
 
   function pkbEnsureCard() {
     var card = $("pkb-kg-card");
-    if (card) return card;
-    var host = $("pkb-kg-canvas");
-    if (!host) {
-      pkbDbgErr("pkbEnsureCard:noHost");
+    if (!card) {
+      pkbDbgErr("pkbEnsureCard:noCard");
       return null;
     }
-    card = document.createElement("div");
-    card.id = "pkb-kg-card";
-    card.className = "kg-card pkb-kg-card";
-    card.hidden = true;
-    host.appendChild(card);
-    pkbDbgWarn("pkbEnsureCard:created_missing_card", {hostChildren: host.children ? host.children.length : null});
     return card;
+  }
+
+  function pkbSyncDepthFill() {
+    var depth = $("pkb-kg-depth");
+    if (!depth) return;
+    var min = parseInt(depth.min || "0", 10);
+    var max = parseInt(depth.max || "4", 10);
+    var val = parseInt(depth.value || "1", 10);
+    var pct = (max > min) ? ((val - min) * 100 / (max - min)) : 0;
+    depth.style.setProperty("--pkb-depth-pct", String(pct) + "%");
   }
 
   function pkbNormNodeId(nid) {
@@ -564,6 +568,8 @@
       return;
     }
     card.hidden = false;
+    var modal = $("pkb-card-modal");
+    if (modal) modal.classList.add("on");
     card.innerHTML = '<div class="mono" style="padding:6px 0">загрузка карточки…</div>';
     try {
       var cardUrl = "/api/private-kb/graph/card?node_id=" + encodeURIComponent(nodeId);
@@ -577,7 +583,6 @@
           pkbEscHtml(nb.label || nb.node_id) + (nb.relation ? ' · ' + pkbEscHtml(nb.relation) : '') + '</button>';
       }).join("");
       card.innerHTML =
-        '<button class="pkb-kg-card-close" type="button" aria-label="Закрыть">×</button>' +
         '<button class="pkb-kg-card-delete" type="button" aria-label="Удалить узел" title="Удалить эту карточку и её связи">' +
           '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path></svg>' +
         '</button>' +
@@ -586,8 +591,6 @@
         '<div class="pkb-kg-card-text">' + pkbMdToHtml(d.text || d.text_knowledge || "") + '</div>' +
         (neigh ? '<div class="pkb-kg-neigh">' + neigh + '</div>' : '');
       pkbEnableCardScrollIsolation(card);
-      var x = card.querySelector(".pkb-kg-card-close");
-      if (x) x.addEventListener("click", pkbCloseCard);
       var del = card.querySelector(".pkb-kg-card-delete");
       if (del) del.addEventListener("click", pkbDeleteSelectedNode);
       Array.prototype.forEach.call(card.querySelectorAll(".pkb-kg-neigh button"), function (b) {
@@ -596,14 +599,11 @@
     } catch (e) {
       pkbDbgErr("pkbOpenCard:error", {nodeId: nodeId, message: e && e.message ? e.message : String(e)});
       card.innerHTML =
-        '<button class="pkb-kg-card-close" type="button" aria-label="Закрыть">×</button>' +
         '<button class="pkb-kg-card-delete" type="button" aria-label="Удалить узел" title="Удалить эту карточку и её связи">' +
           '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path></svg>' +
         '</button>' +
         '<div class="mono">ошибка карточки: ' + pkbEscHtml(e.message) + '</div>';
       pkbEnableCardScrollIsolation(card);
-      var x2 = card.querySelector(".pkb-kg-card-close");
-      if (x2) x2.addEventListener("click", pkbCloseCard);
       var del2 = card.querySelector(".pkb-kg-card-delete");
       if (del2) del2.addEventListener("click", pkbDeleteSelectedNode);
     }
@@ -908,6 +908,10 @@
     if (cOverlay) cOverlay.addEventListener("click", function (e) { if (e.target === cOverlay) pkbCloseConfirm(); });
     var cOk = $("pkb-confirm-ok");
     if (cOk) cOk.addEventListener("click", function () { if (typeof pkbPendingConfirm === "function") pkbPendingConfirm(); });
+    var cm = $("pkb-card-modal");
+    if (cm) cm.addEventListener("click", function (e) { if (e.target === cm) pkbCloseCard(); });
+    var cc = $("pkb-card-close");
+    if (cc) cc.addEventListener("click", pkbCloseCard);
     var go = $("pkb-kg-search-go");
     if (go) go.addEventListener("click", pkbSearch);
     var qi = $("pkb-kg-query");
@@ -922,8 +926,10 @@
     var badge = $("pkb-kg-depth-badge");
     if (depth) {
       if (badge) badge.textContent = depth.value;
+      pkbSyncDepthFill();
       depth.addEventListener("input", function () {
         if (badge) badge.textContent = depth.value;
+        pkbSyncDepthFill();
         pkbRealtimeFilter();
       });
     }

@@ -339,18 +339,18 @@
   }
 
   /* ===== MODELS HEALTH (cloud.ru) — справа от погоды (ПК), снизу (мобилка) ===== */
-  .mh-widget{background:transparent; flex:1; min-width:150px;
-    border-left:2px solid var(--ink); padding-left:14px;
-    display:flex; flex-direction:column; gap:6px;
+  .mh-widget{background:transparent; flex:1; min-width:160px;
+    border-left:1.5px solid rgba(30,26,22,.35); padding-left:22px;
+    display:flex; flex-direction:column; gap:8px;
     position:relative; z-index:2;
     isolation:isolate; overflow:visible}
   @media(max-width:920px){
     /* на узких — разделитель сверху вместо слева */
-    .mh-widget{border-left:none; border-top:2px solid var(--ink);
-      padding-left:0; padding-top:10px}
+    .mh-widget{border-left:none; border-top:1.5px solid rgba(30,26,22,.35);
+      padding-left:0; padding-top:12px}
   }
   .mh-head{display:flex; align-items:center; justify-content:space-between; gap:8px}
-  .mh-title{font-family:'Space Mono',monospace; font-size:9px; letter-spacing:.12em;
+  .mh-title{font-family:'Space Mono',monospace; font-size:10px; letter-spacing:.12em;
     text-transform:uppercase; color:var(--orange)}
   .mh-overall{font-family:'Space Mono',monospace; font-size:9px; letter-spacing:.08em;
     padding:2px 6px; border:1.5px solid var(--ink); white-space:nowrap}
@@ -360,7 +360,7 @@
   .mh-overall.wait{background:#eee; color:#7a7167}
   .mh-rows{display:flex; flex-direction:column; gap:4px}
   .mh-row{display:flex; align-items:center; gap:8px; font-family:'Space Mono',monospace;
-    font-size:10px; color:#4a423a; min-height:18px}
+    font-size:11px; color:#3d362e; min-height:20px}
   .mh-dot{width:9px; height:9px; border-radius:50%; flex:none;
     border:1.5px solid var(--ink); background:#ccc}
   .mh-dot.up{background:#2f8f4e}
@@ -368,7 +368,7 @@
   .mh-dot.wait{background:#c9beac; animation:mhpulse 1s ease-in-out infinite}
   @keyframes mhpulse{0%,100%{opacity:.4}50%{opacity:1}}
   .mh-label{flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-  .mh-lat{color:#9a8f82; font-size:9px; white-space:nowrap}
+  .mh-lat{color:#7a6f62; font-size:10px; white-space:nowrap}
 
   @media(max-width:500px){
     .mh-row{font-size:11px; min-height:22px}

@@ -289,14 +289,15 @@
 
   /* ===== WEATHER WIDGET ===== */
   .wx-widget{
-    position:relative; overflow:hidden;
+    position:relative; overflow:hidden; z-index:5;
     border:2px solid var(--ink); background:var(--paper); color:var(--ink);
     padding:14px 16px; display:flex; flex-direction:row; align-items:stretch; gap:14px;
     align-self:start;
   }
   /* левый блок — сама погода, тут живёт абсолютный SVG */
   .wx-main{position:relative; overflow:hidden;
-    min-width:170px; display:flex; flex-direction:column; gap:2px; flex:none}
+    min-width:170px; min-height:108px;
+    display:flex; flex-direction:column; justify-content:center; gap:2px; flex:none}
   .wx-city{font-family:'Space Mono',monospace; font-size:10px;
     letter-spacing:.12em; text-transform:uppercase; color:var(--orange); z-index:2}
   .wx-time{font-family:'Fraunces',serif; font-weight:900;
@@ -317,19 +318,20 @@
   }
   @media(max-width:500px){
     .wx-widget{width:100%; margin-top:12px}
-    /* даём wx-main горизонтальную раскладку и место под иконку справа */
-    .wx-main{min-width:0; overflow:visible; padding-right:96px}
+    /* компактно и стабильно: резервируем место под иконку справа */
+    .wx-main{min-width:0; min-height:96px; overflow:hidden; padding-right:78px}
     .wx-time{font-size:34px}
     .wx-temp{font-size:30px; margin-top:0}
-    /* иконку фиксируем в правой части блока, а не за его границей */
-    .wx-sky{right:6px; width:90px; height:90px; opacity:.2}
+    /* иконка строго внутри блока */
+    .wx-sky{right:0; width:78px; height:78px; top:50%; transform:translateY(-50%); opacity:.16}
   }
 
   /* ===== MODELS HEALTH (cloud.ru) — справа от погоды (ПК), снизу (мобилка) ===== */
   .mh-widget{background:transparent; flex:1; min-width:150px;
     border-left:2px solid var(--ink); padding-left:14px;
     display:flex; flex-direction:column; gap:6px;
-    position:relative; z-index:2}
+    position:relative; z-index:2;
+    isolation:isolate; overflow:visible}
   @media(max-width:920px){
     /* на узких — разделитель сверху вместо слева */
     .mh-widget{border-left:none; border-top:2px solid var(--ink);
@@ -359,16 +361,17 @@
   /* ===== ORBIT (геймификация при наведении на виджет моделей) ===== */
   .mh-widget{cursor:default}
   .mh-orbit{
-    position:absolute; z-index:20; left:50%; bottom:calc(100% + 10px);
-    transform:translateX(-50%) scale(.6); transform-origin:center bottom;
-    width:170px; height:170px; border-radius:50%;
+    position:absolute; z-index:25;
+    right:10px; top:10px;
+    transform:scale(.6); transform-origin:100% 0;
+    width:150px; height:150px; border-radius:50%;
     background:var(--paper); border:2px solid var(--ink);
     box-shadow:6px 6px 0 rgba(30,26,22,.18);
     opacity:0; pointer-events:none; transition:opacity .18s ease, transform .22s ease;
   }
-  .mh-widget:hover .mh-orbit{opacity:1; transform:translateX(-50%) scale(1)}
-  .mh-orbit-title{position:absolute; top:10px; left:0; right:0; text-align:center;
-    font-family:'Space Mono',monospace; font-size:8px; letter-spacing:.14em;
+  .mh-widget:hover .mh-orbit{opacity:1; transform:scale(1)}
+  .mh-orbit-title{position:absolute; top:9px; left:0; right:0; text-align:center;
+    font-family:'Space Mono',monospace; font-size:8px; letter-spacing:.12em;
     text-transform:uppercase; color:var(--orange)}
   .mh-orbit svg{position:absolute; inset:0; width:100%; height:100%}
   .mh-orbit-ring{fill:none; stroke:var(--ink); stroke-width:1.4;
@@ -381,26 +384,20 @@
   .mh-sat-1 .mh-sat-rot{animation-duration:9s}
   .mh-sat-2 .mh-sat-rot{animation-duration:13s; animation-direction:reverse}
   .mh-sat-3 .mh-sat-rot{animation-duration:17s}
-  .mh-sat-dot{position:absolute; width:15px; height:15px; border-radius:50%;
+  .mh-sat-dot{position:absolute; width:12px; height:12px; border-radius:50%;
     border:2px solid var(--ink); background:#c9beac;
     transform:translate(-50%,-50%);
-    box-shadow:0 0 0 3px var(--paper), 2px 2px 0 rgba(30,26,22,.25)}
-  .mh-sat-1 .mh-sat-dot{left:52px; top:0}
-  .mh-sat-2 .mh-sat-dot{left:66px; top:0}
-  .mh-sat-3 .mh-sat-dot{left:78px; top:0}
+    box-shadow:0 0 0 2px var(--paper), 2px 2px 0 rgba(30,26,22,.25)}
+  .mh-sat-1 .mh-sat-dot{left:46px; top:0}
+  .mh-sat-2 .mh-sat-dot{left:58px; top:0}
+  .mh-sat-3 .mh-sat-dot{left:69px; top:0}
   .mh-sat-dot.up{background:#2f8f4e}
   .mh-sat-dot.down{background:#d94714}
   .mh-sat-dot.wait{background:#c9beac; animation:mhpulse 1s ease-in-out infinite}
-  .mh-sat-cap{position:absolute; left:50%; top:20px; transform:translateX(-50%);
-    font-family:'Space Mono',monospace; font-size:8px; letter-spacing:.06em;
-    color:#4a423a; white-space:nowrap; background:var(--paper); padding:0 3px}
-  .mh-sat-1 .mh-sat-cap{color:#1e7d46}
   @keyframes mhOrbitSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-  /* держим подпись горизонтальной, компенсируя вращение орбиты нельзя —
-     поэтому подписи статичные снизу орбиты */
-  .mh-legend{position:absolute; left:0; right:0; bottom:9px; text-align:center;
-    display:flex; justify-content:center; gap:9px;
-    font-family:'Space Mono',monospace; font-size:7.5px; letter-spacing:.03em; color:#6b6055}
+  .mh-legend{position:absolute; left:0; right:0; bottom:8px; text-align:center;
+    display:flex; justify-content:center; gap:7px;
+    font-family:'Space Mono',monospace; font-size:7px; letter-spacing:.02em; color:#6b6055}
   .mh-legend span{display:inline-flex; align-items:center; gap:3px}
   .mh-legend i{width:7px; height:7px; border-radius:50%; border:1px solid var(--ink);
     background:#c9beac; display:inline-block}

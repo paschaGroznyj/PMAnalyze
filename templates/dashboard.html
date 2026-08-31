@@ -2189,7 +2189,10 @@ function wxIcon(cc){
   else if(cc<50)  inner=`<g transform="translate(-14,-14) scale(.8)">${sun}</g>${cloudSm}`; // солнце за облаком
   else if(cc<80)  inner=cloudBig;                              // облачно
   else            inner=`<g opacity=".55" transform="translate(-16,10)">${cloudSm}</g>${cloudBig}`; // пасмурно
-  return `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+  // preserveAspectRatio: центрируем контент; обёртка <g> с лёгким сдвигом вверх
+  // компенсирует то, что фигуры облаков нарисованы в нижней половине viewBox,
+  // чтобы иконка визуально стояла по центру, а не прилипала к верхнему краю.
+  return `<svg viewBox="0 0 120 120" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"><g transform="translate(0,-8)">${inner}</g></svg>`;
 }
 
 function wxTick(){

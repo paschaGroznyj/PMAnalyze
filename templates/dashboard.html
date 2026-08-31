@@ -725,8 +725,10 @@
     .pkb-kg-info{gap:8px}
     .pkb-kg-tools{width:100%; justify-content:flex-start}
     .pkb-kg-canvas{height:340px; box-shadow:3px 3px 0 var(--ink)}
-    .pkb-kg-search-row{display:block}
-    .pkb-kg-inp-wrap{width:100%}
+    .pkb-graph-wrap .pkb-kg-search-row, .kg-search-row.pkb-kg-search-row{display:block !important; gap:0; flex-wrap:nowrap}
+    .pkb-graph-wrap .pkb-kg-search-row .pkb-kg-inp-wrap, .kg-inp-wrap.pkb-kg-inp-wrap{display:block; width:100% !important; max-width:none; min-width:0; flex:none}
+    #pkb-kg-query{width:100%; min-height:40px; padding:10px 46px 10px 10px; font-size:14px}
+    #pkb-kg-search-go{right:6px; width:40px; height:40px}
     .pkb-kg-llm{display:inline-flex; width:100%; margin-top:8px}
     .kg-search-go, #pkb-kg-search-go{width:40px; height:40px}
     #pkb-kg-refresh, #pkb-kg-delete-all, #btn-kg-export{width:40px; height:40px; min-height:40px; padding:0}

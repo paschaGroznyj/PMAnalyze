@@ -307,7 +307,7 @@
   .wx-sub{font-family:'Space Mono',monospace; font-size:9px;
     letter-spacing:.08em; color:#7a7167; z-index:2; margin-top:2px}
   /* SVG-статус погоды фоном блока */
-  .wx-sky{position:absolute; right:-12px; top:50%; transform:translateY(-50%);
+  .wx-sky{position:absolute; right:-12px; top:44%; transform:translateY(-50%);
     width:120px; height:120px; opacity:.16; z-index:1; pointer-events:none}
   .wx-sky svg{width:100%; height:100%}
   .wx-main > div{position:relative; z-index:2}
@@ -318,20 +318,29 @@
   }
   @media(max-width:500px){
     .wx-widget{width:100%; margin-top:12px}
-    /* мобилка: иконка справа от времени/температуры, без наездов */
+    /* мобилка: температура над временем, иконка справа */
     .wx-main{
       min-width:0; min-height:96px; overflow:hidden; padding-right:0;
-      display:grid; grid-template-columns:1fr 78px; grid-template-rows:auto auto;
-      column-gap:8px; align-items:center;
+      display:grid; grid-template-columns:1fr 78px;
+      grid-template-rows:auto auto auto auto;
+      grid-template-areas:
+        "city sky"
+        "temp sky"
+        "time sky"
+        "sub  sky";
+      column-gap:8px; row-gap:1px; align-items:center;
     }
-    .wx-main > div:nth-of-type(1){grid-column:1; grid-row:1}
-    .wx-main > div:nth-of-type(2){grid-column:1; grid-row:2}
+    .wx-main > div{display:contents}
+    #wx-city{grid-area:city}
+    #wx-temp{grid-area:temp}
+    #wx-time{grid-area:time}
+    #wx-sub{grid-area:sub}
     .wx-time{font-size:34px}
-    .wx-temp{font-size:30px; margin-top:0}
+    .wx-temp{font-size:30px; margin-top:0; margin-bottom:1px}
     /* иконка строго в правой колонке */
     .wx-sky{
       position:static; right:auto; top:auto; transform:none;
-      grid-column:2; grid-row:1 / span 2;
+      grid-area:sky;
       justify-self:end; align-self:center;
       width:78px; height:78px; opacity:.18;
     }

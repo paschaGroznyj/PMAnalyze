@@ -26,7 +26,14 @@ from urllib.parse import urlparse, parse_qs
 from fastapi import FastAPI, BackgroundTasks, Request, Response, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
-from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
+try:
+    from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
+    _HAS_AIOKAFKA = True
+except Exception:
+    AIOKafkaProducer = None
+    AIOKafkaConsumer = None
+    _HAS_AIOKAFKA = False
+
 from pydantic import BaseModel, Field
 
 from app.pipeline import PMAnalyzePipeline, Settings
@@ -381,7 +388,7 @@ async def lifespan(app: FastAPI):
 
     await pipeline.start()
 
-    if CATCHPM_BRIDGE_ENABLED:
+    if CATCHPM_BRIDGE_ENABLED and _HAS_AIOKAFKA:
         await _bridge_get_producer()
         global _bridge_consumer_task
         _bridge_consumer_task = asyncio.create_task(_bridge_consume_loop())
@@ -430,6 +437,8 @@ api_logger = logging.getLogger("uvicorn.error")
 
 
 async def _bridge_get_producer() -> AIOKafkaProducer:
+    if not _HAS_AIOKAFKA:
+        raise RuntimeError("aiokafka_not_installed")
     global _bridge_producer
     if _bridge_producer is None:
         _bridge_producer = AIOKafkaProducer(
@@ -452,6 +461,8 @@ async def _bridge_stop_producer() -> None:
 
 
 async def _bridge_consume_loop() -> None:
+    if not _HAS_AIOKAFKA:
+        return
     consumer = AIOKafkaConsumer(
         CATCHPM_CHAT_TOPIC,
         bootstrap_servers=CATCHPM_KAFKA_BOOTSTRAP,
@@ -3098,6 +3109,8 @@ class BridgePollIn(BaseModel):
 
 @app.post("/api/bridge/catchpm/send")
 async def api_bridge_catchpm_send(body: BridgeSendIn):
+    if not _HAS_AIOKAFKA:
+        return JSONResponse({"ok": False, "error": "aiokafka_not_installed"}, status_code=503)
     text = (body.prompt or "").strip()
     if not text:
         return JSONResponse({"ok": False, "error": "empty prompt"}, status_code=400)
@@ -3131,6 +3144,8 @@ async def api_bridge_catchpm_send(body: BridgeSendIn):
 
 @app.post("/api/bridge/catchpm/poll")
 async def api_bridge_catchpm_poll(body: BridgePollIn):
+    if not _HAS_AIOKAFKA:
+        return JSONResponse({"ok": False, "error": "aiokafka_not_installed"}, status_code=503)
     req_id = (body.request_id or "").strip()
     st = _bridge_requests.get(req_id)
     if not st:

@@ -463,8 +463,8 @@
         pkbDbg("vis:click->focus", {nid: nid});
         pkbOpenNodeCardSafe(nid);
       } else {
-        pkbDbgWarn("vis:click->emptyNode closeCard");
-        pkbCloseCard();
+        // пустой клик по холсту НЕ закрывает карточку: закрытие только по art-close/оверлею
+        pkbDbgWarn("vis:click->emptyNode ignore");
       }
     });
     // selectNode — ещё один надёжный источник, если click проглотил узел
@@ -495,6 +495,50 @@
     pkbNet.on("zoom", function (params) { pkbDbg("vis:zoom", {scale: params && params.scale}); });
     pkbNet.on("release", function (params) { pkbDbg("vis:release", params || {}); });
     pkbNet.once("stabilized", function (iter) { pkbDbg("vis:stabilized", {iterations: iter}); });
+
+    // MOBILE TAP: на тач vis нередко не шлёт click с params.nodes, а getNodeAt по
+    // одной DOM-точке мажет. Ловим touchstart/touchend сами: если палец почти не
+    // сдвинулся (tap, не drag/zoom) — ищем ближайший узел в небольшом радиусе.
+    (function bindTouchTap() {
+      var canvasEl = host.querySelector("canvas") || host;
+      var tStartX = 0, tStartY = 0, tMoved = false, tMulti = false, tTime = 0;
+      canvasEl.addEventListener("touchstart", function (e) {
+        if (e.touches && e.touches.length > 1) { tMulti = true; return; }
+        tMulti = false; tMoved = false; tTime = Date.now();
+        var t = e.touches[0];
+        tStartX = t.clientX; tStartY = t.clientY;
+      }, { passive: true });
+      canvasEl.addEventListener("touchmove", function (e) {
+        if (tMulti) return;
+        var t = e.touches[0];
+        if (!t) return;
+        if (Math.abs(t.clientX - tStartX) > 10 || Math.abs(t.clientY - tStartY) > 10) tMoved = true;
+      }, { passive: true });
+      canvasEl.addEventListener("touchend", function (e) {
+        if (tMulti || tMoved) return;
+        if ((Date.now() - tTime) > 700) return; // это был hold, его обработает vis:hold
+        var rect = canvasEl.getBoundingClientRect();
+        var dx = tStartX - rect.left, dy = tStartY - rect.top;
+        var nid = null;
+        try { nid = pkbNet.getNodeAt({ x: dx, y: dy }); } catch (er) {}
+        if (!nid) {
+          // расширенный поиск: пробуем сетку смещений вокруг точки касания
+          var offs = [8, -8, 16, -16, 24, -24];
+          for (var i = 0; i < offs.length && !nid; i++) {
+            for (var jj = 0; jj < offs.length && !nid; jj++) {
+              try { nid = pkbNet.getNodeAt({ x: dx + offs[i], y: dy + offs[jj] }); } catch (er2) {}
+            }
+          }
+        }
+        nid = pkbNormNodeId(nid);
+        pkbDbg("touch:tap", {x: dx, y: dy, nid: nid});
+        if (nid) {
+          e.preventDefault();
+          pkbOpenNodeCardSafe(nid);
+        }
+        // ВАЖНО: пустой tap на мобилке НЕ закрывает карточку (закрытие только по art-close)
+      }, { passive: false });
+    })();
 
     // сырые DOM-события на холсте/контейнере
     ["pointerdown","pointerup","click","mousedown","mouseup","touchstart","touchend"].forEach(function (evt) {

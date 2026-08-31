@@ -19,6 +19,29 @@
   const depthVal = byId("kg-depth-val");
   const chunksCount = byId("kg-chunks-count");
   const searchHint = byId("kg-search-hint");
+  const depthDesc = byId("kg-depth-desc");
+  const badgeFound = byId("kg-badge-found");
+  const badgeLlm = byId("kg-badge-llm");
+  const badgeHl = byId("kg-badge-hl");
+
+  const DEPTH_DESCR = {
+    0: "только совпадения",
+    1: "прямые связи",
+    2: "через один узел",
+    3: "расширенный контекст",
+    4: "широкий контекст",
+    5: "максимальный охват"
+  };
+  function updateDepthDesc(){
+    if(!depthDesc) return;
+    const d = Math.max(0, Math.min(5, Number(depthEl?.value || 0)));
+    depthDesc.textContent = DEPTH_DESCR[d] || "";
+  }
+  function updateStatBadges(found, used, maxCtx, highlighted){
+    if(badgeFound) badgeFound.textContent = "Совпадений: " + Number(found||0);
+    if(badgeLlm)   badgeLlm.textContent   = "В модель: " + Number(used||0) + "/" + Number(maxCtx||100);
+    if(badgeHl)    badgeHl.textContent    = "Подсвечено: " + Number(highlighted||0);
+  }
   const searchSummary = byId("kg-search-summary");
   const summaryWrap = byId("kg-summary-wrap");
   const btnSummaryCheck = byId("btn-kg-summary-check");
@@ -140,6 +163,8 @@
     if(searchLlm) searchLlm.checked = false;
     if(depthEl) depthEl.value = "1";
     if(depthVal) depthVal.textContent = "1";
+    updateDepthDesc();
+    updateStatBadges(0, 0, MAX_CTX, 0);
     setSummaryButtonEnabled(false);
     updateSummaryToggleMeta(0,0,MAX_CTX);
     setSummaryHtml("");
@@ -166,6 +191,7 @@
 
     // Пересчёт только визуальной глубины: найдено/used остаются от последнего гибридного запроса.
     if(chunksCount) chunksCount.textContent = `найдено ${found} · в модель ${used}/${maxCtx} · depth ${depth}`;
+    updateStatBadges(found, used, maxCtx, presentIds.length);
     updateSummaryToggleMeta(found, used, maxCtx);
     setSummaryButtonEnabled(!!lastHybridState.want_summary);
     if(searchHint){
@@ -199,6 +225,7 @@
     }
 
     if(chunksCount) chunksCount.textContent = `найдено ${found} · в модель ${used}/${maxCtx} · depth ${depth}`;
+    updateStatBadges(found, used, maxCtx, presentIds.length);
     updateSummaryToggleMeta(found, used, maxCtx);
     setSummaryButtonEnabled(!!lastHybridState.want_summary);
     if(searchHint){
@@ -930,6 +957,7 @@
 
     // Подсветим узлы, которые сервер вернул как результат гибридного поиска.
     const serverNodeIds = (d.items || []).map(it => it.node_id).filter(Boolean);
+    updateStatBadges(found, used, maxCtx, serverNodeIds.filter(id => nodeRawMap.has(id)).length);
     saveHybridState({
       q,
       depth,
@@ -979,6 +1007,7 @@
     const d = Number(depth||depthEl?.value||0);
     const used = Math.min(num, MAX_CTX);
     chunksCount.textContent = `найдено ${num} · в модель ${used}/${MAX_CTX} · depth ${d}`;
+    updateStatBadges(num, used, MAX_CTX, lastSelection ? lastSelection.size : 0);
     updateSummaryToggleMeta(num, used, MAX_CTX);
   }
 
@@ -1510,6 +1539,7 @@
   if(depthEl && depthVal){
     const syncDepth = ()=>{
       depthVal.textContent = String(depthEl.value || "1");
+      updateDepthDesc();
       applyDepthRealtime(false);
     };
     depthEl.addEventListener("input", syncDepth);

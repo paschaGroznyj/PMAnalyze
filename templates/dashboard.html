@@ -516,6 +516,69 @@
     font-family:'Space Mono',monospace; font-size:13px; line-height:1.5; color:#4a443c;
     white-space:pre-wrap; word-break:break-word; margin:0}
   .brg-reply:empty{display:none}
+
+  /* ==== кастомный выбор агента ==== */
+  .brg-agentdd{position:relative}
+  .brg-agentdd.disabled{opacity:.6; pointer-events:none}
+  .brg-agent-trigger{width:100%; box-sizing:border-box; display:flex; align-items:center; gap:12px;
+    border:2px solid var(--ink); background:#fff; color:var(--ink); border-radius:10px;
+    padding:10px 12px; cursor:pointer; text-align:left;
+    transition:box-shadow .12s ease, transform .1s ease}
+  .brg-agent-trigger:hover{box-shadow:3px 3px 0 var(--orange)}
+  .brg-agentdd.open .brg-agent-trigger{box-shadow:3px 3px 0 var(--ink)}
+  .brg-agent-ic{flex:none; width:34px; height:34px; border-radius:8px; border:2px solid var(--ink);
+    background:var(--orange); color:#fff; display:inline-flex; align-items:center; justify-content:center;
+    font-family:'Fraunces',serif; font-weight:900; font-size:18px}
+  .brg-agent-tx{display:flex; flex-direction:column; gap:1px; min-width:0; flex:1}
+  .brg-agent-n{font-family:'Space Mono',monospace; font-size:14px; font-weight:700; color:var(--ink)}
+  .brg-agent-s{font-family:'Space Mono',monospace; font-size:11px; color:#8a7f70; letter-spacing:.06em}
+  .brg-agent-arrow{flex:none; color:#8a7f70; font-size:13px; transition:transform .15s ease}
+  .brg-agentdd.open .brg-agent-arrow{transform:rotate(180deg)}
+  .brg-agent-menu{position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:40;
+    background:#fff; border:2px solid var(--ink); border-radius:10px; box-shadow:5px 5px 0 var(--ink);
+    padding:6px; display:flex; flex-direction:column; gap:4px}
+  .brg-agent-opt{display:flex; align-items:flex-start; gap:12px; width:100%; box-sizing:border-box;
+    border:2px solid transparent; background:#fff; border-radius:8px; padding:9px 10px; cursor:pointer;
+    text-align:left; transition:background .12s ease, border-color .12s ease}
+  .brg-agent-opt:hover{background:#f7efe8}
+  .brg-agent-opt.sel{border-color:var(--ink); background:#fbf4ea}
+  .brg-agent-nrow{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .brg-agent-badge{font-family:'Space Mono',monospace; font-size:9px; letter-spacing:.08em;
+    text-transform:uppercase; color:#fff; background:var(--ink); border-radius:5px; padding:2px 6px}
+  .brg-agent-desc{font-family:'Space Mono',monospace; font-size:11px; color:#8a7f70; line-height:1.4; margin-top:3px}
+  .brg-agent-check{flex:none; color:var(--orange); font-weight:900; font-size:16px; align-self:center}
+
+  /* ==== мини-чат bridge ==== */
+  .brg-chat{border:2px solid var(--ink); border-radius:10px; background:#fbf4ea; overflow:hidden}
+  .brg-chat-head{display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:9px 12px; border-bottom:2px solid var(--ink); background:#f3ece0}
+  .brg-chat-title{font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.1em;
+    text-transform:uppercase; color:#6b6055}
+  .brg-chat-toggle{border:2px solid var(--ink); background:#fff; color:var(--ink); border-radius:8px;
+    padding:5px 10px; font-family:'Space Mono',monospace; font-size:10px; letter-spacing:.06em;
+    text-transform:uppercase; cursor:pointer; transition:transform .1s ease, box-shadow .12s ease}
+  .brg-chat-toggle:hover{transform:translate(-1px,-1px); box-shadow:2px 2px 0 var(--orange)}
+  .brg-chat-more{font-family:'Space Mono',monospace; font-size:10px; letter-spacing:.06em;
+    color:#9a8f82; text-align:center; padding:6px 8px 0}
+  .brg-chat-body{display:flex; flex-direction:column; gap:10px; padding:12px}
+  .brg-chat-body.scroll{max-height:340px; overflow-y:auto}
+  .brg-msg{display:flex; flex-direction:column; gap:3px; max-width:88%}
+  .brg-msg.user{align-self:flex-end; align-items:flex-end}
+  .brg-msg.agent{align-self:flex-start; align-items:flex-start}
+  .brg-msg-meta{font-family:'Space Mono',monospace; font-size:9px; letter-spacing:.1em;
+    text-transform:uppercase; color:#9a8f82}
+  .brg-msg-txt{border:2px solid var(--ink); border-radius:10px; padding:9px 12px;
+    font-family:'Space Mono',monospace; font-size:13px; line-height:1.5; color:#4a443c;
+    white-space:pre-wrap; word-break:break-word}
+  .brg-msg.user .brg-msg-txt{background:var(--orange); color:#fff; border-color:var(--ink)}
+  .brg-msg.agent .brg-msg-txt{background:#fff}
+  @media (max-width:500px){
+    .brg-chat-body.scroll{max-height:280px}
+    .brg-msg{max-width:95%}
+    .brg-chat-toggle{min-height:36px}
+    .brg-agent-trigger{min-height:48px}
+    .brg-agent-opt{min-height:44px}
+  }
   @media (max-width:920px){
     .brg-row{gap:10px}
   }
@@ -587,6 +650,19 @@
   #kg-depth::-moz-range-track{height:3px; background:#1E1A16; border:none}
   #kg-depth::-moz-range-thumb{width:16px; height:16px; border-radius:50%; background:#FF5A1F; border:2px solid #1E1A16; cursor:pointer}
   .kg-search-hint{margin-top:8px; font-size:12px; color:#9a8f82; letter-spacing:.04em}
+  .kg-depth-desc{font-size:11px; color:#8a7f70; letter-spacing:.03em; font-style:italic; min-width:120px}
+  /* ==== бейджи статистики поиска ==== */
+  .kg-stats-row{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px}
+  .kg-badge{font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.03em; color:#4a443c;
+    border:2px solid var(--ink); background:#fff; border-radius:8px; padding:4px 9px; white-space:nowrap}
+  .kg-badge-found{background:#fbf4ea}
+  .kg-badge-llm{border-style:dashed}
+  .kg-badge-hl{color:#fff; background:var(--orange); border-color:var(--ink)}
+  @media (max-width:500px){
+    .kg-stats-row{gap:6px}
+    .kg-badge{font-size:10px; padding:5px 8px}
+    .kg-depth-desc{min-width:0; width:100%}
+  }
   .kg-search-summary{background:#fff; padding:9px 44px 9px 10px; font-size:14px; color:#4a443c; line-height:1.5}
   .kg-search-summary .kg-ref-link{color:#FF5A1F; text-decoration:underline; cursor:pointer; font-weight:700}
   .kg-search-summary .kg-ref-link:hover{color:#d94714}
@@ -1227,7 +1303,7 @@
     <div class="kg-search" id="kg-search-box" style="display:none">
       <div class="kg-search-row">
         <div class="kg-inp-wrap">
-          <input type="text" id="kg-search-q" maxlength="500" autocomplete="off" placeholder="поиск по узлам knowledge/wiki в реальном времени">
+          <input type="text" id="kg-search-q" maxlength="500" autocomplete="off" placeholder="Искать по узлам, статьям и чанкам…">
           <button class="kg-search-go" id="kg-search-go" title="Применить глубину связей" aria-label="Применить глубину связей">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="11" cy="11" r="7"></circle>
@@ -1235,17 +1311,22 @@
             </svg>
           </button>
         </div>
-        <label class="filter mono search-llm">
-          <input type="checkbox" id="kg-search-llm"> LLM-саммари
+        <label class="filter mono search-llm" title="Собрать краткое резюме найденного через LLM">
+          <input type="checkbox" id="kg-search-llm"> Краткое резюме найденного
         </label>
       </div>
-      <div class="kg-depth-row">
+      <div class="kg-depth-row" title="Больше глубина — шире контекст, но больше шума на графе">
         <span class="mono kg-depth-label">глубина связей</span>
-        <input type="range" id="kg-depth" min="0" max="5" step="1" value="1">
+        <input type="range" id="kg-depth" min="0" max="5" step="1" value="1" class="kg-depth-range">
         <span class="mono kg-depth-val" id="kg-depth-val">1</span>
-        <span class="mono kg-chunks" id="kg-chunks-count">чанков в модель: 0</span>
+        <span class="mono kg-depth-desc" id="kg-depth-desc">прямые связи</span>
       </div>
-      <div class="kg-search-hint mono" id="kg-search-hint">Подсветка работает при вводе. Глубина применяется в реальном времени при движении ползунка.</div>
+      <div class="kg-stats-row" id="kg-stats-row">
+        <span class="kg-badge kg-badge-found" id="kg-badge-found">Совпадений: 0</span>
+        <span class="kg-badge kg-badge-llm" id="kg-badge-llm">В модель: 0/100</span>
+        <span class="kg-badge kg-badge-hl" id="kg-badge-hl">Подсвечено: 0</span>
+      </div>
+      <div class="kg-search-hint mono" id="kg-search-hint">Поиск находит сущности и связанные с ними фрагменты. Глубина применяется в реальном времени.</div>
       <div class="kg-summary-wrap" id="kg-summary-wrap" style="display:none">
         <button class="kg-summary-collapse open" id="btn-kg-summary-check" title="Свернуть саммари" aria-label="Свернуть саммари">
           <span class="ico ico-closed" aria-hidden="true">
@@ -2518,6 +2599,25 @@ setInterval(loadSearchStats, 60000);
     const [reply, setReply]         = React.useState('');
     const [busy, setBusy]           = React.useState(false);
     const [resetNote, setResetNote] = React.useState('');
+    // Мини-чат: история сообщений {role:'user'|'agent', text, agent, ts}
+    const [messages, setMessages]   = React.useState([]);
+    const [histOpen, setHistOpen]   = React.useState(false);
+    const [agentOpen, setAgentOpen] = React.useState(false);
+    const chatEndRef = React.useRef(null);
+
+    const AGENTS = [
+      {id:'catchpm', name:'CatchPM', sub:'Kafka bridge', desc:'Основной агент: маршрут через Kafka, доступны инструменты и модель coder', badge:'по умолчанию'},
+      {id:'hermes',  name:'Hermes',  sub:'HTTP',         desc:'Прямой HTTP-агент с собственной памятью сессии', badge:'HTTP'}
+    ];
+    const currentAgent = AGENTS.find(a=>a.id===agent) || AGENTS[0];
+
+    React.useEffect(()=>{
+      if(chatEndRef.current){ chatEndRef.current.scrollTop = chatEndRef.current.scrollHeight; }
+    }, [messages, histOpen]);
+
+    function pushMsg(role, text){
+      setMessages(prev => [...prev, {role, text, agent, ts:Date.now()}]);
+    }
 
     // Gate: доступ к форме закрыт до ввода валидного секретного ключа.
     const [unlocked, setUnlocked]   = React.useState(false);
@@ -2586,6 +2686,8 @@ setInterval(loadSearchStats, 60000);
         setBusy(true);
         setReply('');
         setResetNote('');
+        pushMsg('user', q);
+        setPrompt('');
         setStat('отправляю в '+agent+'…', '');
         const r = await fetch('/api/agent/send', {
           method:'POST', headers:{'Content-Type':'application/json'},
@@ -2614,7 +2716,9 @@ setInterval(loadSearchStats, 60000);
           const pd = await pr.json();
           if(!pd.ok){ setStat('poll error: '+(pd.error||'unknown'), 'err'); setBusy(false); return; }
           if(pd.ready){
-            setReply((pd.message&&pd.message.message)||'пустой ответ');
+            const ans=(pd.message&&pd.message.message)||'пустой ответ';
+            setReply(ans);
+            pushMsg('agent', ans);
             setStat('ответ получен', 'ok');
             setBusy(false);
             return;
@@ -2653,14 +2757,36 @@ setInterval(loadSearchStats, 60000);
 
     return e('div', {className:'brg-form'}, [
       e('div', {key:'f-agent', className:'brg-field'}, [
-        e('label', {key:'l', className:'brg-label', htmlFor:'brg-agent'}, 'Агент'),
-        e('select', {
-          key:'s', id:'brg-agent', className:'brg-select', value:agent, disabled:busy,
-          onChange:(ev)=>setAgent(ev.target.value)
-        }, [
-          e('option', {key:'catchpm', value:'catchpm'}, 'CatchPM (Kafka bridge)'),
-          e('option', {key:'hermes', value:'hermes'}, 'Hermes (HTTP)')
-        ])
+        e('label', {key:'l', className:'brg-label'}, 'Агент'),
+        e('div', {key:'dd', className:'brg-agentdd'+(agentOpen?' open':'')+(busy?' disabled':'')}, [
+          e('button', {key:'trigger', type:'button', className:'brg-agent-trigger',
+            disabled:busy, onClick:()=>setAgentOpen(o=>!o)}, [
+            e('span', {key:'ic', className:'brg-agent-ic'}, currentAgent.name.slice(0,1)),
+            e('span', {key:'tx', className:'brg-agent-tx'}, [
+              e('span', {key:'n', className:'brg-agent-n'}, currentAgent.name),
+              e('span', {key:'s', className:'brg-agent-s'}, currentAgent.sub)
+            ]),
+            e('span', {key:'ar', className:'brg-agent-arrow'}, '▾')
+          ]),
+          agentOpen ? e('div', {key:'menu', className:'brg-agent-menu'},
+            AGENTS.map(a => e('button', {
+              key:a.id, type:'button',
+              className:'brg-agent-opt'+(a.id===agent?' sel':''),
+              onClick:()=>{ setAgent(a.id); setAgentOpen(false); }
+            }, [
+              e('span', {key:'ic', className:'brg-agent-ic'}, a.name.slice(0,1)),
+              e('span', {key:'tx', className:'brg-agent-tx'}, [
+                e('span', {key:'nr', className:'brg-agent-nrow'}, [
+                  e('span', {key:'n', className:'brg-agent-n'}, a.name),
+                  a.badge ? e('span', {key:'b', className:'brg-agent-badge'}, a.badge) : null
+                ]),
+                e('span', {key:'d', className:'brg-agent-desc'}, a.desc)
+              ]),
+              a.id===agent ? e('span', {key:'ck', className:'brg-agent-check'}, '✓') : null
+            ]))
+          ) : null
+        ]),
+        e('div', {key:'hint', className:'brg-hint'}, 'Агент определяет маршрут и доступные инструменты')
       ]),
 
       agent==='hermes' ? e('div', {key:'f-hreset', className:'brg-field'}, [
@@ -2714,7 +2840,29 @@ setInterval(loadSearchStats, 60000);
         e('div', {key:'s', className:'brg-status '+statusKind}, status)
       ]),
 
-      reply ? e('pre', {key:'reply', className:'brg-reply'}, reply) : null
+      messages.length ? (function(){
+        const total = messages.length;
+        // По умолчанию показываем последние 6; если развёрнуто — все, но в скролл-контейнере.
+        const shown = histOpen ? messages : messages.slice(-6);
+        const hidden = total - shown.length;
+        return e('div', {key:'chat', className:'brg-chat'}, [
+          e('div', {key:'head', className:'brg-chat-head'}, [
+            e('span', {key:'t', className:'brg-chat-title'}, 'Диалог · '+total),
+            total > 6 ? e('button', {key:'tg', type:'button', className:'brg-chat-toggle',
+              onClick:()=>setHistOpen(o=>!o)},
+              histOpen ? 'Свернуть историю' : ('Показать всю историю (+'+(total-6)+')')) : null
+          ]),
+          (!histOpen && hidden>0) ? e('div', {key:'more', className:'brg-chat-more'},
+            '↑ ещё '+hidden+' сообщений скрыто') : null,
+          e('div', {key:'body', className:'brg-chat-body'+(histOpen?' scroll':''), ref:chatEndRef},
+            shown.map((m,i) => e('div', {key:i, className:'brg-msg '+m.role}, [
+              e('div', {key:'meta', className:'brg-msg-meta'},
+                m.role==='user' ? 'Вы' : (m.agent==='hermes'?'Hermes':'CatchPM')),
+              e('div', {key:'txt', className:'brg-msg-txt'}, m.text)
+            ]))
+          )
+        ]);
+      })() : null
     ]);
   }
   ReactDOM.createRoot(rootEl).render(e(App));

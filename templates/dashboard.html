@@ -358,61 +358,9 @@
   .mh-label{flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .mh-lat{color:#9a8f82; font-size:9px; white-space:nowrap}
 
-  /* ===== ORBIT (геймификация при наведении на виджет моделей) ===== */
-  .mh-widget{cursor:default}
-  .mh-orbit{
-    position:absolute; z-index:25;
-    right:10px; top:10px;
-    transform:scale(.6); transform-origin:100% 0;
-    width:150px; height:150px; border-radius:50%;
-    background:var(--paper); border:2px solid var(--ink);
-    box-shadow:6px 6px 0 rgba(30,26,22,.18);
-    opacity:0; pointer-events:none; transition:opacity .18s ease, transform .22s ease;
-  }
-  .mh-widget:hover .mh-orbit{opacity:1; transform:scale(1)}
-  .mh-orbit-title{position:absolute; top:9px; left:0; right:0; text-align:center;
-    font-family:'Space Mono',monospace; font-size:8px; letter-spacing:.12em;
-    text-transform:uppercase; color:var(--orange)}
-  .mh-orbit svg{position:absolute; inset:0; width:100%; height:100%}
-  .mh-orbit-ring{fill:none; stroke:var(--ink); stroke-width:1.4;
-    stroke-dasharray:3 5; opacity:.5}
-  .mh-orbit-core{fill:var(--ink)}
-  /* три вращающихся спутника, каждый на своём радиусе-орбите */
-  .mh-sat{position:absolute; top:50%; left:50%; width:0; height:0}
-  .mh-sat-rot{position:absolute; top:0; left:0; width:0; height:0;
-    animation:mhOrbitSpin linear infinite}
-  .mh-sat-1 .mh-sat-rot{animation-duration:9s}
-  .mh-sat-2 .mh-sat-rot{animation-duration:13s; animation-direction:reverse}
-  .mh-sat-3 .mh-sat-rot{animation-duration:17s}
-  .mh-sat-dot{position:absolute; width:12px; height:12px; border-radius:50%;
-    border:2px solid var(--ink); background:#c9beac;
-    transform:translate(-50%,-50%);
-    box-shadow:0 0 0 2px var(--paper), 2px 2px 0 rgba(30,26,22,.25)}
-  .mh-sat-1 .mh-sat-dot{left:46px; top:0}
-  .mh-sat-2 .mh-sat-dot{left:58px; top:0}
-  .mh-sat-3 .mh-sat-dot{left:69px; top:0}
-  .mh-sat-dot.up{background:#2f8f4e}
-  .mh-sat-dot.down{background:#d94714}
-  .mh-sat-dot.wait{background:#c9beac; animation:mhpulse 1s ease-in-out infinite}
-  @keyframes mhOrbitSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-  .mh-legend{position:absolute; left:0; right:0; bottom:8px; text-align:center;
-    display:flex; justify-content:center; gap:7px;
-    font-family:'Space Mono',monospace; font-size:7px; letter-spacing:.02em; color:#6b6055}
-  .mh-legend span{display:inline-flex; align-items:center; gap:3px}
-  .mh-legend i{width:7px; height:7px; border-radius:50%; border:1px solid var(--ink);
-    background:#c9beac; display:inline-block}
-  .mh-legend i.up{background:#2f8f4e}
-  .mh-legend i.down{background:#d94714}
-  .mh-legend i.wait{background:#c9beac}
-
   @media(max-width:500px){
     .mh-row{font-size:11px; min-height:22px}
     .mh-dot{width:11px; height:11px}
-    /* на тач-устройствах hover нестабилен — орбиту прячем, чтобы не мешала */
-    .mh-orbit{display:none}
-  }
-  @media(hover:none){
-    .mh-orbit{display:none}
   }
 
   /* ===== SEARCH PANEL ===== */
@@ -956,23 +904,6 @@
         </div>
       </div>
       <div class="mh-widget" id="mh-widget">
-        <div class="mh-orbit" id="mh-orbit" aria-hidden="true">
-          <div class="mh-orbit-title">cloud.ru · модели</div>
-          <svg viewBox="0 0 170 170">
-            <circle class="mh-orbit-ring" cx="85" cy="85" r="52"/>
-            <circle class="mh-orbit-ring" cx="85" cy="85" r="66"/>
-            <circle class="mh-orbit-ring" cx="85" cy="85" r="78"/>
-            <circle class="mh-orbit-core" cx="85" cy="85" r="6"/>
-          </svg>
-          <div class="mh-sat mh-sat-1"><div class="mh-sat-rot"><span class="mh-sat-dot wait" id="mh-sat-summary"></span></div></div>
-          <div class="mh-sat mh-sat-2"><div class="mh-sat-rot"><span class="mh-sat-dot wait" id="mh-sat-embeddings"></span></div></div>
-          <div class="mh-sat mh-sat-3"><div class="mh-sat-rot"><span class="mh-sat-dot wait" id="mh-sat-graph"></span></div></div>
-          <div class="mh-legend">
-            <span><i id="mh-leg-summary"></i>саммари</span>
-            <span><i id="mh-leg-graph"></i>граф</span>
-            <span><i id="mh-leg-embeddings"></i>вектора</span>
-          </div>
-        </div>
         <div class="mh-head">
           <div class="mh-title">Модели cloud.ru</div>
           <div class="mh-overall wait" id="mh-overall">проверка…</div>
@@ -2293,12 +2224,6 @@ function mhApplyService(key, svc){
   const up = !!(svc && svc.ok);
   const state = up ? "up" : "down";
   dot.className = "mh-dot " + state;
-  // синхронизируем орбитальный спутник и точку легенды
-  const sat = document.getElementById("mh-sat-"+key);
-  if(sat){ sat.className = "mh-sat-dot " + state;
-    sat.title = (svc && svc.model ? svc.model+" · " : "") + state; }
-  const leg = document.getElementById("mh-leg-"+key);
-  if(leg){ leg.className = state; }
   const base = (svc && svc.label) ? svc.label : key;
   lbl.textContent = base;
   if(up){

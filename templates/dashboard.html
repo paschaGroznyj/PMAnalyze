@@ -318,12 +318,23 @@
   }
   @media(max-width:500px){
     .wx-widget{width:100%; margin-top:12px}
-    /* компактно и стабильно: резервируем место под иконку справа */
-    .wx-main{min-width:0; min-height:96px; overflow:hidden; padding-right:78px}
+    /* мобилка: иконка справа от времени/температуры, без наездов */
+    .wx-main{
+      min-width:0; min-height:96px; overflow:hidden; padding-right:0;
+      display:grid; grid-template-columns:1fr 78px; grid-template-rows:auto auto;
+      column-gap:8px; align-items:center;
+    }
+    .wx-main > div:nth-of-type(1){grid-column:1; grid-row:1}
+    .wx-main > div:nth-of-type(2){grid-column:1; grid-row:2}
     .wx-time{font-size:34px}
     .wx-temp{font-size:30px; margin-top:0}
-    /* иконка строго внутри блока */
-    .wx-sky{right:0; width:78px; height:78px; top:50%; transform:translateY(-50%); opacity:.16}
+    /* иконка строго в правой колонке */
+    .wx-sky{
+      position:static; right:auto; top:auto; transform:none;
+      grid-column:2; grid-row:1 / span 2;
+      justify-self:end; align-self:center;
+      width:78px; height:78px; opacity:.18;
+    }
   }
 
   /* ===== MODELS HEALTH (cloud.ru) — справа от погоды (ПК), снизу (мобилка) ===== */

@@ -4,7 +4,7 @@
 
   const btnStart = byId("btn-kg-start");
   const btnRefresh = byId("btn-kg-refresh");
-  const btnExport = byId("btn-kg-export");
+  const btnExport = byId("btn-kg-export-global");
   const runInfo = byId("kg-run-info");
   const graphInfo = byId("kg-graph-info");
   const graphEl = byId("kg-canvas");
@@ -26,8 +26,79 @@
   if(!btnStart || !graphEl) return;
 
   let network = null;
+  let currentLayoutMode = "force"; // force (дефолт) | hierarchical | radial
   let nodesDS = null;
   let edgesDS = null;
+  let hideRelates = false; // скрывать связи relates_to в реальном времени
+
+  // Типы связей, которые считаем "слабыми/типовыми" и прячем по чекбоксу.
+  const RELATES_LABELS = new Set(["relates_to", "related_to", "relates", "associated_with"]);
+  function isRelatesEdge(edgeId){
+    const raw = edgeRawMap.get(edgeId);
+    if(!raw) return false;
+    const lbl = String(raw.label || raw.relation_type || "").trim().toLowerCase();
+    return RELATES_LABELS.has(lbl);
+  }
+
+  // Пресеты раскладки. force = текущая боевая физика (эталон), не меняем.
+  function getLayoutOptions(mode){
+    if(mode === "hierarchical"){
+      return {
+        layout: {
+          hierarchical: {
+            enabled: true,
+            direction: "LR",
+            sortMethod: "hubsize",
+            nodeSpacing: 170,
+            levelSeparation: 240,
+            treeSpacing: 220,
+          },
+        },
+        physics: {enabled: false, stabilization: false},
+      };
+    }
+    if(mode === "radial"){
+      return {
+        layout: {
+          hierarchical: false,
+          improvedLayout: true,
+          randomSeed: 7,
+        },
+        physics: {
+          enabled: true,
+          solver: "forceAtlas2Based",
+          stabilization: {enabled: true, iterations: 320, updateInterval: 25},
+          forceAtlas2Based: {
+            gravitationalConstant: -14,
+            centralGravity: 0.16,
+            springLength: 165,
+            springConstant: 0.09,
+            damping: 0.68,
+            avoidOverlap: 0.8,
+          },
+          minVelocity: 0.38,
+          timestep: 0.4,
+        },
+      };
+    }
+    // force (дефолт, эталонная боевая физика)
+    return {
+      layout: {hierarchical: false},
+      physics: {
+        enabled: true,
+        stabilization: {enabled: true, iterations: 320, updateInterval: 25},
+        barnesHut: {
+          gravitationalConstant: -18000,
+          centralGravity: 0.2,
+          springLength: 260,
+          springConstant: 0.035,
+          damping: 0.5,
+          avoidOverlap: 0.78
+        },
+        minVelocity: 0.45,
+      },
+    };
+  }
   let knownNodeIds = new Set();
   let knownEdgeIds = new Set();
   let pollTimer = null;
@@ -623,10 +694,33 @@
     for(const id of knownNodeIds) adjacency.set(id, new Set());
     const edges = edgesDS ? edgesDS.get() : [];
     for(const e of edges){
+      // При активном фильтре relates_to не учитываем такие рёбра в связности,
+      // чтобы глубина связей (bfsDepth) не проходила через скрытые связи.
+      if(hideRelates && isRelatesEdge(e.id)) continue;
       if(!adjacency.has(e.from)) adjacency.set(e.from, new Set());
       if(!adjacency.has(e.to)) adjacency.set(e.to, new Set());
       adjacency.get(e.from).add(e.to);
       adjacency.get(e.to).add(e.from);
+    }
+  }
+
+  // Прячет/показывает рёбра relates_to в реальном времени и пересобирает
+  // связность, затем переприменяет текущую подсветку/глубину.
+  function applyRelatesVisibility(){
+    if(!edgesDS) return;
+    const eUpd = [];
+    for(const e of edgesDS.get()){
+      if(isRelatesEdge(e.id)){
+        eUpd.push({id: e.id, hidden: hideRelates});
+      }
+    }
+    if(eUpd.length) edgesDS.update(eUpd);
+    rebuildAdjacency();
+    // Переприменяем текущее состояние: если активен поиск/глубина — пересчитать,
+    // иначе просто сброс визуала (скрытые рёбра останутся hidden).
+    const q = (searchQ?.value || "").trim();
+    if(q && q.length >= 2){
+      applyDepthRealtime(false);
     }
   }
 
@@ -647,7 +741,7 @@
     }
     const eUpd = edgesDS.get().map(e=>({
       id: e.id,
-      hidden: false,
+      hidden: (hideRelates && isRelatesEdge(e.id)) ? true : false,
       color: {color: (edgeRawMap.get(e.id)?.kind === "wiki_link" ? "#7b6f8f" : "#FF5A1F")},
       width: 1.2,
     }));
@@ -749,8 +843,11 @@
 
     const eUpd = [];
     for(const e of edgesDS.get()){
+      const relHidden = hideRelates && isRelatesEdge(e.id);
       const on = selected.has(e.from) && selected.has(e.to);
-      if(selected.size === 0){
+      if(relHidden){
+        eUpd.push({id: e.id, hidden: true});
+      }else if(selected.size === 0){
         eUpd.push({
           id: e.id,
           hidden: false,
@@ -971,6 +1068,64 @@
     }, 300);
   }
 
+  // Применить выбранный layout к уже загруженным данным графа.
+  // Важно: вызывается ТОЛЬКО при ручной перерисовке (без realtime на change).
+  function applySelectedLayoutRender(iterations){
+    if(!network) return;
+
+    if(jellyTimer){ clearTimeout(jellyTimer); jellyTimer = null; }
+    if(dragLocalActive){
+      try{ endLocalDrag(); }catch(_){ }
+    }
+
+    try{
+      network.setOptions({
+        layout: {hierarchical: false},
+        physics: {enabled: false, stabilization: false}
+      });
+    }catch(_){ }
+
+    const mode = currentLayoutMode || "force";
+    const opts = getLayoutOptions(mode);
+    try{ network.setOptions(opts); }catch(_){ }
+
+    if(mode === "hierarchical"){
+      setTimeout(()=>{
+        try{ network.fit({animation:{duration:360, easingFunction:"easeInOutQuad"}}); }catch(_){ }
+        try{ network.setOptions({physics:{enabled:false}}); }catch(_){ }
+        applyHubShapes();
+        showGraphLoader(false);
+      }, 40);
+      return;
+    }
+
+    const iters = Number(iterations || (mode === "radial" ? 320 : 300));
+    network.once("stabilizationIterationsDone", ()=>{
+      try{ network.setOptions({physics:{enabled:false}}); }catch(_){ }
+      applyHubShapes();
+      showGraphLoader(false);
+    });
+    try{
+      network.stabilize(iters);
+    }catch(_){
+      setTimeout(()=>{
+        try{ network.setOptions({physics:{enabled:false}}); }catch(_){ }
+        applyHubShapes();
+        showGraphLoader(false);
+      }, 120);
+    }
+  }
+
+  // Выбор режима раскладки БЕЗ ререндера в реальном времени.
+  // Применение — только по ручному обновлению графа.
+  function applyLayoutMode(mode){
+    currentLayoutMode = mode || "force";
+    if(searchHint){
+      searchHint.textContent = `Режим раскладки: ${currentLayoutMode}. Нажмите «Обновить граф», чтобы применить.`;
+    }
+    toast("Режим раскладки сохранён. Нажмите «Обновить граф».");
+  }
+
   let jellyTimer = null;
   function enableJelly(ms){
     if(!network) return;
@@ -978,7 +1133,13 @@
       physics: {
         enabled: true,
         stabilization: false,
-        barnesHut: {gravitationalConstant: -11000, springLength: 200, springConstant: 0.025, damping: 0.4},
+        barnesHut: {
+          gravitationalConstant: -4500,
+          centralGravity: 0.2,
+          springLength: 230,
+          springConstant: 0.03,
+          damping: 0.68
+        },
       }
     });
     if(jellyTimer) clearTimeout(jellyTimer);
@@ -1047,12 +1208,12 @@
         enabled: true,
         stabilization: false,
         barnesHut: {
-          gravitationalConstant: -9000,
-          springLength: 170,
-          springConstant: 0.02,
-          damping: 0.62,
+          gravitationalConstant: -3200,
+          springLength: 150,
+          springConstant: 0.03,
+          damping: 0.72,
         },
-        minVelocity: 1.0,
+        minVelocity: 0.4,
       }
     });
 
@@ -1128,7 +1289,7 @@
       rebuildAdjacency();
 
       const data = {nodes: nodesDS, edges: edgesDS};
-      const options = {
+      const options = Object.assign({
         autoResize: true,
         interaction: {
           hover: true,
@@ -1136,15 +1297,9 @@
           zoomView: true,
           navigationButtons: true,
         },
-        physics: {
-          enabled: true,
-          stabilization: {enabled: true, iterations: 250, updateInterval: 25},
-          barnesHut: {gravitationalConstant: -15000, springLength: 210, springConstant: 0.025, damping: 0.35},
-          minVelocity: 0.75,
-        },
         nodes: {borderWidth: 2},
         edges: {width: 1.2},
-      };
+      }, getLayoutOptions(currentLayoutMode));
 
       network = new vis.Network(graphEl, data, options);
       network.on("doubleClick", (params)=>{
@@ -1155,11 +1310,7 @@
       });
       network.on("dragStart", handleDragStart);
       network.on("dragEnd", handleDragEnd);
-      network.once("stabilizationIterationsDone", ()=>{
-        network.setOptions({physics: {enabled: false}});
-        applyHubShapes();
-        showGraphLoader(false);
-      });
+      applySelectedLayoutRender(currentLayoutMode === "radial" ? 320 : 300);
       updateGraphInfo(payload);
       return true;
     }
@@ -1235,20 +1386,7 @@
         baseKind = new Map((d.nodes||[]).map(n=>[n.id, n.kind || "knowledge"]));
         rebuildAdjacency();
         network.setData({nodes: nodesDS, edges: edgesDS});
-        network.setOptions({
-          physics: {
-            enabled: true,
-            stabilization: {enabled: true, iterations: 300, updateInterval: 25},
-            barnesHut: {gravitationalConstant: -15000, springLength: 210, springConstant: 0.025, damping: 0.35},
-            minVelocity: 0.75,
-          }
-        });
-        network.once("stabilizationIterationsDone", ()=>{
-          network.setOptions({physics: {enabled: false}});
-          applyHubShapes();
-          showGraphLoader(false);
-        });
-        network.stabilize(300);
+        applySelectedLayoutRender(currentLayoutMode === "radial" ? 350 : 320);
         updateGraphInfo(d);
       }
       if(!(reapplyHybridState())){
@@ -1289,23 +1427,8 @@
         baseKind = new Map((d.nodes||[]).map(n=>[n.id, n.kind || "knowledge"]));
         rebuildAdjacency();
         network.setData({nodes: nodesDS, edges: edgesDS});
-        // Тот же путь раскладки, что и при первичной отрисовке (F5):
-        // включаем полную стабилизацию с теми же параметрами и гасим
-        // физику по событию завершения стабилизации, а не по таймеру.
-        network.setOptions({
-          physics: {
-            enabled: true,
-            stabilization: {enabled: true, iterations: 250, updateInterval: 25},
-            barnesHut: {gravitationalConstant: -15000, springLength: 210, springConstant: 0.025, damping: 0.35},
-            minVelocity: 0.75,
-          }
-        });
-        network.once("stabilizationIterationsDone", ()=>{
-          network.setOptions({physics: {enabled: false}});
-          applyHubShapes();
-          showGraphLoader(false);
-        });
-        network.stabilize(250);
+        // Ручной refresh рендерит строго в выбранном режиме раскладки.
+        applySelectedLayoutRender(currentLayoutMode === "radial" ? 320 : 300);
         updateGraphInfo(d);
       }
       if(!(reapplyHybridState())){
@@ -1325,6 +1448,23 @@
 
   if(btnRefresh){
     btnRefresh.onclick = hardRefreshGraph;
+  }
+
+  const hideRelatesEl = byId("kg-hide-relates");
+  if(hideRelatesEl){
+    hideRelates = !!hideRelatesEl.checked;
+    hideRelatesEl.addEventListener("change", ()=>{
+      hideRelates = !!hideRelatesEl.checked;
+      applyRelatesVisibility();
+    });
+  }
+
+  const layoutModeEl = byId("kg-layout-mode");
+  if(layoutModeEl){
+    layoutModeEl.value = currentLayoutMode;
+    layoutModeEl.addEventListener("change", ()=>{
+      applyLayoutMode(layoutModeEl.value || "force");
+    });
   }
   if(btnLoadFull){
     btnLoadFull.onclick = loadFullGraph;

@@ -316,6 +316,8 @@
   var pkbBuilt = false;
   var pkbSearchTimer = null;
   var pkbLastItems = [];
+  var pkbSelectedNodeId = null;
+  var pkbPendingConfirm = null;
   var PKB_PAL = ["#FF5A1F", "#FF7D51", "#FFA581", "#FFC9B1", "#FFE3D8", "#FFF1EA"];
 
   function pkbEscHtml(s) {
@@ -516,6 +518,7 @@
 
   function pkbFocusNode(nodeId, openCard) {
     nodeId = pkbNormNodeId(nodeId);
+    pkbSelectedNodeId = nodeId || null;
     pkbDbg("pkbFocusNode:call", {nodeId: nodeId, openCard: !!openCard, hasNet: !!pkbNet});
     if (!nodeId || !pkbNet) {
       pkbDbgWarn("pkbFocusNode:skip", {nodeId: nodeId, hasNet: !!pkbNet});
@@ -593,6 +596,110 @@
       pkbEnableCardScrollIsolation(card);
       var x2 = card.querySelector(".pkb-kg-card-close");
       if (x2) x2.addEventListener("click", pkbCloseCard);
+    }
+  }
+
+  function pkbSetConfirmStatus(msg, kind) {
+    var el = $("pkb-confirm-status");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.className = "pkb-key-status mono" + (kind ? " " + kind : "");
+  }
+
+  function pkbOpenConfirm(title, text, onOk) {
+    var modal = $("pkb-confirm");
+    var t = $("pkb-confirm-title");
+    var d = $("pkb-confirm-text");
+    var ok = $("pkb-confirm-ok");
+    if (!modal || !ok) return;
+    if (t) t.textContent = title || "Подтверждение";
+    if (d) d.textContent = text || "Вы уверены?";
+    pkbSetConfirmStatus("", null);
+    ok.disabled = false;
+    ok.textContent = "Подтвердить";
+    pkbPendingConfirm = onOk || null;
+    modal.hidden = false;
+  }
+
+  function pkbCloseConfirm() {
+    var modal = $("pkb-confirm");
+    if (modal) modal.hidden = true;
+    pkbPendingConfirm = null;
+  }
+
+  async function pkbDeleteSelectedNode() {
+    var nid = pkbSelectedNodeId || null;
+    if (!nid) {
+      var c = $("pkb-kg-counts");
+      if (c) c.textContent = "Сначала откройте карточку узла";
+      return;
+    }
+    pkbOpenConfirm(
+      "Удалить узел",
+      "Удалить открытую карточку и все её связи? Это действие нельзя отменить.",
+      async function () {
+        var okBtn = $("pkb-confirm-ok");
+        if (okBtn) { okBtn.disabled = true; okBtn.textContent = "Удаляем…"; }
+        try {
+          var d = await pkbApiPost("/api/private-kb/graph/node/delete", { node_id: nid });
+          pkbSetConfirmStatus("Удалено: узел " + (d.deleted_node_id || nid) + ", связей: " + (d.deleted_edges || 0), "ok");
+          pkbCloseCard();
+          pkbSelectedNodeId = null;
+          await pkbLoadFull();
+          setTimeout(pkbCloseConfirm, 180);
+        } catch (e) {
+          pkbSetConfirmStatus("Ошибка удаления: " + e.message, "err");
+          if (okBtn) { okBtn.disabled = false; okBtn.textContent = "Подтвердить"; }
+        }
+      }
+    );
+  }
+
+  async function pkbDeleteAllNodes() {
+    pkbOpenConfirm(
+      "Удалить весь граф",
+      "Удалить все узлы и все связи в вашей персональной базе? Это действие нельзя отменить.",
+      async function () {
+        var okBtn = $("pkb-confirm-ok");
+        if (okBtn) { okBtn.disabled = true; okBtn.textContent = "Удаляем…"; }
+        try {
+          var d = await pkbApiPost("/api/private-kb/graph/clear", {});
+          pkbSetConfirmStatus("Удалено узлов: " + (d.deleted_nodes || 0) + ", связей: " + (d.deleted_edges || 0), "ok");
+          pkbCloseCard();
+          pkbSelectedNodeId = null;
+          await pkbLoadFull();
+          setTimeout(pkbCloseConfirm, 180);
+        } catch (e) {
+          pkbSetConfirmStatus("Ошибка очистки: " + e.message, "err");
+          if (okBtn) { okBtn.disabled = false; okBtn.textContent = "Подтвердить"; }
+        }
+      }
+    );
+  }
+
+  async function pkbExportCsv() {
+    try {
+      var r = await fetch('/api/private-kb/graph/export.csv', { method: 'GET' });
+      if (!r.ok) {
+        var txt = await r.text().catch(function(){ return ''; });
+        throw new Error(txt || ('HTTP ' + r.status));
+      }
+      var blob = await r.blob();
+      var fileName = 'private_kb_graph.csv';
+      var cd = r.headers.get('content-disposition') || '';
+      var m = cd.match(/filename="?([^";]+)"?/i);
+      if (m && m[1]) fileName = m[1];
+      var u = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = u;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(u); }, 1200);
+    } catch (e) {
+      var c = $("pkb-kg-counts");
+      if (c) c.textContent = "ошибка выгрузки: " + e.message;
     }
   }
 
@@ -781,6 +888,18 @@
       var qEl = $("pkb-kg-query");
       pkbLoadFull().then(function () { if (qEl && qEl.value.trim()) pkbRealtimeFilter(); });
     });
+    var delNode = $("pkb-kg-delete-node");
+    if (delNode) delNode.addEventListener("click", pkbDeleteSelectedNode);
+    var delAll = $("pkb-kg-delete-all");
+    if (delAll) delAll.addEventListener("click", pkbDeleteAllNodes);
+    var exportBtn = $("btn-kg-export");
+    if (exportBtn) exportBtn.addEventListener("click", pkbExportCsv);
+    var cCancel = $("pkb-confirm-cancel");
+    if (cCancel) cCancel.addEventListener("click", pkbCloseConfirm);
+    var cOverlay = $("pkb-confirm");
+    if (cOverlay) cOverlay.addEventListener("click", function (e) { if (e.target === cOverlay) pkbCloseConfirm(); });
+    var cOk = $("pkb-confirm-ok");
+    if (cOk) cOk.addEventListener("click", function () { if (typeof pkbPendingConfirm === "function") pkbPendingConfirm(); });
     var go = $("pkb-kg-search-go");
     if (go) go.addEventListener("click", pkbSearch);
     var qi = $("pkb-kg-query");

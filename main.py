@@ -1711,6 +1711,121 @@ async def private_kb_graph_card(request: Request, node_id: str):
     }
 
 
+class PkbGraphDeleteNodeIn(BaseModel):
+    node_id: str
+
+
+@app.post("/api/private-kb/graph/node/delete")
+async def private_kb_graph_delete_node(body: PkbGraphDeleteNodeIn, request: Request):
+    user_id = _require_user_id(request)
+    node_id = (body.node_id or "").strip()
+    raw = node_id[1:] if node_id.startswith("p") else node_id
+    try:
+        rid = int(raw)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad node_id"}, status_code=400)
+
+    async with pool.acquire() as con:
+        async with con.transaction():
+            n_exists = await con.fetchval(
+                "SELECT 1 FROM process_mining.user_private_kb_graph_nodes WHERE user_id=$1 AND id=$2",
+                user_id, rid,
+            )
+            if not n_exists:
+                return JSONResponse({"ok": False, "error": "not_found"}, status_code=404)
+            edges_count = await con.fetchval(
+                "SELECT COUNT(*)::int FROM process_mining.user_private_kb_graph_edges "
+                "WHERE user_id=$1 AND (source_node_id=$2 OR target_node_id=$2)",
+                user_id, rid,
+            )
+            await con.execute(
+                "DELETE FROM process_mining.user_private_kb_graph_nodes WHERE user_id=$1 AND id=$2",
+                user_id, rid,
+            )
+
+    return {"ok": True, "deleted_node_id": "p" + str(rid), "deleted_edges": int(edges_count or 0)}
+
+
+@app.post("/api/private-kb/graph/clear")
+async def private_kb_graph_clear(request: Request):
+    user_id = _require_user_id(request)
+    async with pool.acquire() as con:
+        async with con.transaction():
+            edges_count = await con.fetchval(
+                "SELECT COUNT(*)::int FROM process_mining.user_private_kb_graph_edges WHERE user_id=$1",
+                user_id,
+            )
+            nodes_count = await con.fetchval(
+                "SELECT COUNT(*)::int FROM process_mining.user_private_kb_graph_nodes WHERE user_id=$1",
+                user_id,
+            )
+            await con.execute("DELETE FROM process_mining.user_private_kb_graph_edges WHERE user_id=$1", user_id)
+            await con.execute("DELETE FROM process_mining.user_private_kb_graph_nodes WHERE user_id=$1", user_id)
+
+    return {"ok": True, "deleted_nodes": int(nodes_count or 0), "deleted_edges": int(edges_count or 0)}
+
+
+@app.get("/api/private-kb/graph/export.csv")
+async def private_kb_graph_export_csv(request: Request):
+    user_id = _require_user_id(request)
+    async with pool.acquire() as con:
+        nrows = await con.fetch(
+            """
+            SELECT id, import_id, file_id, label, text_knowledge, importance, tags, metadata, created_at
+            FROM process_mining.user_private_kb_graph_nodes
+            WHERE user_id=$1
+            ORDER BY id
+            """,
+            user_id,
+        )
+        erows = await con.fetch(
+            """
+            SELECT id, import_id, source_node_id, target_node_id, relation_type, relevance_score, importance, created_at
+            FROM process_mining.user_private_kb_graph_edges
+            WHERE user_id=$1
+            ORDER BY id
+            """,
+            user_id,
+        )
+
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow([
+        "row_type", "id", "import_id", "file_id", "node_id", "label", "text_knowledge",
+        "node_importance", "tags", "metadata", "source_node_id", "target_node_id",
+        "relation_type", "relevance_score", "edge_importance", "created_at"
+    ])
+
+    for r in nrows:
+        try:
+            tags = json.dumps(r["tags"], ensure_ascii=False)
+        except Exception:
+            tags = "[]"
+        try:
+            meta = json.dumps(r["metadata"], ensure_ascii=False)
+        except Exception:
+            meta = "{}"
+        w.writerow([
+            "node", int(r["id"]), int(r["import_id"]), int(r["file_id"]) if r["file_id"] is not None else "",
+            "p" + str(int(r["id"])), r["label"] or "", r["text_knowledge"] or "",
+            float(r["importance"] or 0.5), tags, meta,
+            "", "", "", "", "", str(r["created_at"]),
+        ])
+
+    for r in erows:
+        w.writerow([
+            "edge", int(r["id"]), int(r["import_id"]), "", "", "", "", "", "", "",
+            "p" + str(int(r["source_node_id"])), "p" + str(int(r["target_node_id"])),
+            r["relation_type"] or "relates_to", float(r["relevance_score"] or 0.5),
+            float(r["importance"] or 0.5), str(r["created_at"]),
+        ])
+
+    data = out.getvalue().encode("utf-8-sig")
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    headers = {"Content-Disposition": f'attachment; filename="private_kb_graph_{ts}.csv"'}
+    return StreamingResponse(io.BytesIO(data), media_type="text/csv; charset=utf-8", headers=headers)
+
+
 class PkbGraphSearchIn(BaseModel):
     query: str = ""
     depth: int = 1

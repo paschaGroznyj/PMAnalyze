@@ -193,6 +193,42 @@ async def lifespan(app: FastAPI):
             ON process_mining.llm_query_logs(user_id)
         """)
 
+        await con.execute("""
+            CREATE TABLE IF NOT EXISTS process_mining.agents_logs (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                request_id TEXT,
+                chat_id BIGINT,
+                user_id BIGINT,
+                username TEXT NOT NULL,
+                agent_name TEXT NOT NULL DEFAULT 'agent',
+                prompt_text TEXT NOT NULL,
+                response_text TEXT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                error_text TEXT,
+                latency_ms INTEGER,
+                model_name TEXT,
+                tokens_usage JSONB,
+                meta JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_agents_logs_created_at
+            ON process_mining.agents_logs(created_at DESC)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_agents_logs_username_created
+            ON process_mining.agents_logs(username, created_at DESC)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_agents_logs_request_id
+            ON process_mining.agents_logs(request_id)
+        """)
+        await con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_agents_logs_chat_created
+            ON process_mining.agents_logs(chat_id, created_at DESC)
+        """)
+
         # Онбординг-события. Сейчас ключ = visitor_id(кука) + ip.
         # user_id / username / email / groups заполнятся позже из Authentik.
         await con.execute("""
@@ -857,6 +893,88 @@ async def _log_llm_query(
             )
     except Exception as e:
         api_logger.warning(f"llm_query_log_error: {e}")
+
+
+async def _agents_log_insert(*,
+    request_id: str,
+    chat_id: int,
+    user_id: int,
+    username: str,
+    agent_name: str,
+    prompt_text: str,
+    model_name: str | None = None,
+    status: str = "queued",
+    meta: dict | None = None,
+):
+    try:
+        q = (prompt_text or "").strip()[:20000]
+        meta_json = json.dumps(meta or {}, ensure_ascii=False)
+        async with pool.acquire() as con:
+            await con.execute(
+                """
+                INSERT INTO process_mining.agents_logs(
+                    request_id, chat_id, user_id, username, agent_name,
+                    prompt_text, status, model_name, tokens_usage, meta
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)
+                """,
+                (request_id or "")[:128],
+                int(chat_id),
+                int(user_id),
+                (username or "unknown")[:128],
+                (agent_name or "agent")[:32],
+                q,
+                (status or "queued")[:32],
+                (model_name or "")[:128] or None,
+                '{"input_tokens":0,"output_tokens":0,"total_tokens":0}',
+                meta_json,
+            )
+    except Exception as e:
+        api_logger.warning(f"agents_log_insert_error: {e}")
+
+
+async def _agents_log_finalize(*,
+    request_id: str,
+    status: str,
+    response_text: str | None = None,
+    error_text: str | None = None,
+    tokens_usage: dict | None = None,
+):
+    try:
+        if not request_id:
+            return
+        resp = (response_text or "").strip()[:40000] or None
+        err = (error_text or "").strip()[:2000] or None
+        tu = tokens_usage or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        try:
+            tu_json = json.dumps({
+                "input_tokens": int(tu.get("input_tokens", 0) or 0),
+                "output_tokens": int(tu.get("output_tokens", 0) or 0),
+                "total_tokens": int(tu.get("total_tokens", 0) or 0),
+            }, ensure_ascii=False)
+        except Exception:
+            tu_json = '{"input_tokens":0,"output_tokens":0,"total_tokens":0}'
+
+        async with pool.acquire() as con:
+            await con.execute(
+                """
+                UPDATE process_mining.agents_logs
+                SET
+                    response_text = COALESCE($2, response_text),
+                    status = $3,
+                    error_text = COALESCE($4, error_text),
+                    tokens_usage = $5::jsonb,
+                    latency_ms = GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) * 1000))::int
+                WHERE request_id = $1
+                """,
+                (request_id or "")[:128],
+                resp,
+                (status or "ready")[:32],
+                err,
+                tu_json,
+            )
+    except Exception as e:
+        api_logger.warning(f"agents_log_finalize_error: {e}")
 
 
 # ---------------- Identity / Onboarding (фундамент под Authentik) ----------------
@@ -3245,13 +3363,25 @@ async def _send_to_catchpm_bridge(*, prompt: str, chat_id: int, user_id: int, us
 async def _poll_bridge_request(req_id: str):
     st = _bridge_requests.get(req_id)
     if not st:
+        await _agents_log_finalize(
+            request_id=req_id,
+            status="request_not_found",
+            error_text="request_not_found",
+        )
         return {"ok": False, "error": "request_not_found"}
 
     if st.get("agent") == "hermes":
         if st.get("delivered"):
             return {"ok": True, "ready": False}
         st["delivered"] = True
-        return {"ok": True, "ready": True, "message": st.get("message")}
+        msg = st.get("message") or {}
+        await _agents_log_finalize(
+            request_id=req_id,
+            status="ready",
+            response_text=str(msg.get("message") or ""),
+            tokens_usage=msg.get("tokens_usage") or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        )
+        return {"ok": True, "ready": True, "message": msg}
 
     chat_id = int(st["chat_id"])
     cursor = int(st.get("cursor", 0))
@@ -3261,6 +3391,12 @@ async def _poll_bridge_request(req_id: str):
 
     msg = inbox[cursor]
     st["cursor"] = cursor + 1
+    await _agents_log_finalize(
+        request_id=req_id,
+        status="ready",
+        response_text=str(msg.get("message") or ""),
+        tokens_usage=msg.get("tokens_usage") or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+    )
     return {"ok": True, "ready": True, "message": msg}
 
 
@@ -3311,6 +3447,13 @@ async def _call_hermes_agent(*, prompt: str, user_name: str, user_id: int, chat_
         content = ""
     content = str(content or "").strip() or "пустой ответ"
 
+    usage = (data or {}).get("usage") or {}
+    tokens_usage = {
+        "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
+        "output_tokens": int(usage.get("completion_tokens", 0) or 0),
+        "total_tokens": int(usage.get("total_tokens", 0) or 0),
+    }
+
     # Обновляем локальную память (скользящее окно).
     if HERMES_MEMORY_TURNS > 0:
         updated = [*hist, {"role": "user", "content": text}, {"role": "assistant", "content": content}]
@@ -3328,7 +3471,7 @@ async def _call_hermes_agent(*, prompt: str, user_name: str, user_id: int, chat_
             "message": content,
             "action": "hermes_chat_completion",
             "agent_model": HERMES_MODEL,
-            "tokens_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            "tokens_usage": tokens_usage,
             "ts": datetime.now(timezone.utc).isoformat(),
         },
     }
@@ -3401,6 +3544,22 @@ async def api_agent_send(body: AgentSendIn, request: Request):
         )
         if not res.get("ok"):
             return JSONResponse({"ok": False, "error": res.get("error", "send_failed")}, status_code=int(res.get("status") or 500))
+        await _agents_log_insert(
+            request_id=str(res.get("request_id") or ""),
+            chat_id=int(res.get("chat_id") or chat_id),
+            user_id=int(body.user_id),
+            username=user_name,
+            agent_name="catchpm",
+            prompt_text=body.prompt,
+            model_name=_normalize_bridge_model(body.agent_model),
+            status="queued",
+            meta={
+                "route": "/api/agent/send",
+                "tab_num": body.tab_num,
+                "context_size": body.context_size,
+                "selected_tools": _filter_bridge_tools(body.selected_tools),
+            },
+        )
         return {**res, "agent": "catchpm"}
 
     # hermes
@@ -3413,6 +3572,20 @@ async def api_agent_send(body: AgentSendIn, request: Request):
     )
     if not res.get("ok"):
         return JSONResponse({"ok": False, "error": res.get("error", "hermes_failed")}, status_code=int(res.get("status") or 500))
+    await _agents_log_insert(
+        request_id=str(res.get("request_id") or ""),
+        chat_id=int(res.get("chat_id") or chat_id),
+        user_id=int(body.user_id),
+        username=user_name,
+        agent_name="hermes",
+        prompt_text=body.prompt,
+        model_name=HERMES_MODEL,
+        status="queued",
+        meta={
+            "route": "/api/agent/send",
+            "tab_num": body.tab_num,
+        },
+    )
     return {**res, "agent": "hermes"}
 
 
@@ -3442,6 +3615,99 @@ async def api_agent_hermes_reset(body: AgentHermesResetIn, request: Request):
 async def api_agent_poll(body: AgentPollIn):
     req_id = (body.request_id or "").strip()
     return await _poll_bridge_request(req_id)
+
+
+# ---------------- Health моделей cloud.ru (саммари / вектора / граф) ----------------
+_MODELS_HEALTH_CACHE: dict = {"ts": 0.0, "data": None}
+_MODELS_HEALTH_TTL = int(os.getenv("MODELS_HEALTH_TTL", "30"))  # сек
+
+
+async def _probe_chat_model() -> dict:
+    """Лёгкая проба chat/completions на cloud.ru (используется для саммари и графа)."""
+    from app.search import CLOUD_BASE, CLOUD_KEY, LLM_MODEL
+    t0 = time.time()
+    if not CLOUD_KEY:
+        return {"ok": False, "status": "no_key", "error": "CLOUD_LLM_ACCESS_KEY пуст", "latency_ms": 0, "model": LLM_MODEL}
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            r = await client.post(
+                f"{CLOUD_BASE}/chat/completions",
+                headers={"Authorization": f"Bearer {CLOUD_KEY}", "Content-Type": "application/json"},
+                json={"model": LLM_MODEL, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]},
+            )
+        lat = int((time.time() - t0) * 1000)
+        if r.status_code == 200:
+            return {"ok": True, "status": "up", "http": 200, "latency_ms": lat, "model": LLM_MODEL}
+        return {"ok": False, "status": "down", "http": r.status_code,
+                "error": (r.text or "")[:180], "latency_ms": lat, "model": LLM_MODEL}
+    except Exception as e:
+        return {"ok": False, "status": "error", "error": f"{type(e).__name__}: {e}"[:180],
+                "latency_ms": int((time.time() - t0) * 1000), "model": LLM_MODEL}
+
+
+async def _probe_embed_model() -> dict:
+    """Лёгкая проба /embeddings на cloud.ru (используется для векторов)."""
+    from app.search import EMBED_BASE, EMBED_KEY, EMBED_MODEL, EMBED_DIM
+    t0 = time.time()
+    if not EMBED_KEY:
+        return {"ok": False, "status": "no_key", "error": "PM_EMBED_KEY/CLOUD ключ пуст", "latency_ms": 0, "model": EMBED_MODEL}
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            r = await client.post(
+                f"{EMBED_BASE}/embeddings",
+                headers={"Authorization": f"Bearer {EMBED_KEY}", "Content-Type": "application/json"},
+                json={"model": EMBED_MODEL, "input": ["ping"]},
+            )
+        lat = int((time.time() - t0) * 1000)
+        if r.status_code == 200:
+            dim = 0
+            try:
+                dim = len(r.json()["data"][0]["embedding"])
+            except Exception:
+                dim = 0
+            return {"ok": True, "status": "up", "http": 200, "latency_ms": lat,
+                    "model": EMBED_MODEL, "dim": dim or EMBED_DIM}
+        return {"ok": False, "status": "down", "http": r.status_code,
+                "error": (r.text or "")[:180], "latency_ms": lat, "model": EMBED_MODEL}
+    except Exception as e:
+        return {"ok": False, "status": "error", "error": f"{type(e).__name__}: {e}"[:180],
+                "latency_ms": int((time.time() - t0) * 1000), "model": EMBED_MODEL}
+
+
+@app.get("/api/models/health")
+async def api_models_health(request: Request, force: int = 0):
+    """Доступность моделей cloud.ru для генерации саммари, векторов и графа.
+
+    Возвращает по каждому назначению: up/down/error + модель + latency.
+    Кэш на MODELS_HEALTH_TTL сек, чтобы фронт мог поллить часто без нагрузки.
+    """
+    now = time.time()
+    if not force and _MODELS_HEALTH_CACHE["data"] and (now - _MODELS_HEALTH_CACHE["ts"] < _MODELS_HEALTH_TTL):
+        cached = dict(_MODELS_HEALTH_CACHE["data"])
+        cached["cached"] = True
+        return cached
+
+    chat_res, embed_res = await asyncio.gather(_probe_chat_model(), _probe_embed_model())
+
+    # Chat/completions обслуживает и саммари, и граф — одна проба, два назначения.
+    services = {
+        "summary": {"label": "Саммари", **chat_res},
+        "embeddings": {"label": "Вектора", **embed_res},
+        "graph": {"label": "Граф знаний", **chat_res},
+    }
+    all_ok = all(s.get("ok") for s in services.values())
+    any_ok = any(s.get("ok") for s in services.values())
+    overall = "up" if all_ok else ("degraded" if any_ok else "down")
+
+    data = {
+        "ok": True,
+        "overall": overall,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "services": services,
+    }
+    _MODELS_HEALTH_CACHE["ts"] = now
+    _MODELS_HEALTH_CACHE["data"] = data
+    return data
 
 
 

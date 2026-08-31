@@ -116,6 +116,11 @@ _bridge_consumer_task: asyncio.Task | None = None
 _bridge_inbox: dict[int, list[dict]] = {}
 _bridge_requests: dict[str, dict] = {}
 
+# Локальная память Hermes внутри PMAnalyze (на время жизни процесса)
+# Храним только последние N пар user/assistant для каждого chat_id.
+HERMES_MEMORY_TURNS = max(0, int(os.getenv("HERMES_MEMORY_TURNS", "8")))
+_hermes_memory: dict[int, list[dict]] = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -3163,6 +3168,11 @@ class AgentGateVerifyIn(BaseModel):
     secret_code: str = Field(min_length=1, max_length=128)
 
 
+class AgentHermesResetIn(BaseModel):
+    user_name: str = "dashpm-user"
+    secret_code: str = Field(min_length=1, max_length=128)
+
+
 # Секретный ключ доступа к bridge-панели. Генерирует ТОЛЬКО админ и кладёт в env.
 # Пользователь лишь вводит его в модалке. Сверка — прямым сравнением с env (constant-time).
 AGENT_BRIDGE_GATE_KEY = (os.getenv("AGENT_BRIDGE_GATE_KEY") or "").strip()
@@ -3264,10 +3274,21 @@ async def _call_hermes_agent(*, prompt: str, user_name: str, user_id: int, chat_
     if HERMES_API_KEY:
         headers["Authorization"] = f"Bearer {HERMES_API_KEY}"
 
+    # Берём локальную историю для этого chat_id.
+    hist = _hermes_memory.get(int(chat_id), []) if HERMES_MEMORY_TURNS > 0 else []
+
+    system_msg = (
+        "Ты работаешь в DashPM bridge. "
+        "Используй ТОЛЬКО сообщения из текущего запроса (messages) как источник контекста. "
+        "Игнорируй любую внешнюю/скрытую память сервиса. "
+        f"meta: platform=dashpm; tab={tab_num}; user={user_name}; user_id={user_id}; chat_id={chat_id}"
+    )
+
     payload = {
         "model": HERMES_MODEL,
         "messages": [
-            {"role": "system", "content": f"platform=dashpm; tab={tab_num}; user={user_name}; user_id={user_id}; chat_id={chat_id}"},
+            {"role": "system", "content": system_msg},
+            *hist,
             {"role": "user", "content": text},
         ],
         "temperature": 0.2,
@@ -3289,6 +3310,14 @@ async def _call_hermes_agent(*, prompt: str, user_name: str, user_id: int, chat_
     except Exception:
         content = ""
     content = str(content or "").strip() or "пустой ответ"
+
+    # Обновляем локальную память (скользящее окно).
+    if HERMES_MEMORY_TURNS > 0:
+        updated = [*hist, {"role": "user", "content": text}, {"role": "assistant", "content": content}]
+        max_msgs = max(2, HERMES_MEMORY_TURNS * 2)
+        if len(updated) > max_msgs:
+            updated = updated[-max_msgs:]
+        _hermes_memory[int(chat_id)] = updated
 
     req_id = uuid.uuid4().hex
     _bridge_requests[req_id] = {
@@ -3392,6 +3421,21 @@ async def api_agent_gate_verify(body: AgentGateVerifyIn):
     if _agent_gate_is_valid(body.secret_code):
         return {"ok": True, "valid": True}
     return JSONResponse({"ok": True, "valid": False}, status_code=403)
+
+
+@app.post("/api/agent/hermes/reset")
+async def api_agent_hermes_reset(body: AgentHermesResetIn, request: Request):
+    if not _agent_gate_is_valid(body.secret_code):
+        return JSONResponse({"ok": False, "error": "gate_forbidden"}, status_code=403)
+
+    user_name = _normalize_bridge_user_name(body.user_name)
+    if not user_name:
+        return JSONResponse({"ok": False, "error": "username_required"}, status_code=400)
+
+    ip = _extract_client_ip(request)
+    chat_id = _agent_chat_id(ip, user_name, "hermes")
+    _hermes_memory.pop(int(chat_id), None)
+    return {"ok": True, "chat_id": int(chat_id), "cleared": True}
 
 
 @app.post("/api/agent/poll")

@@ -318,20 +318,20 @@
   }
   @media(max-width:500px){
     .wx-widget{width:100%; margin-top:12px}
-    /* мобилка: та же схема, что на ПК — флекс-колонка + иконка абсолютом справа.
-       ключевое: резервируем место справа под иконку, чтобы текст в неё не залезал */
+    /* мобилка: как на ПК. не даем блоку растянуться на всю ширину,
+       и убираем padding-right, чтобы иконка была водяным знаком под текстом */
     .wx-main{
-      min-width:0; min-height:96px; overflow:hidden;
-      padding-right:96px;
+      min-width:170px; min-height:96px; overflow:hidden;
+      padding-right:0; align-self:flex-start;
       display:flex; flex-direction:column; justify-content:center; gap:2px;
     }
     .wx-main > div{position:relative; z-index:2}
     .wx-time{font-size:34px}
     .wx-temp{font-size:30px}
-    /* иконка как на ПК — абсолютом справа, чуть меньше */
+    /* иконка водяным знаком, как на десктопе */
     .wx-sky{
       position:absolute; right:-10px; top:44%; transform:translateY(-50%);
-      width:96px; height:96px; opacity:.16; z-index:1;
+      width:96px; height:96px; opacity:.16; z-index:1; pointer-events:none;
     }
   }
 

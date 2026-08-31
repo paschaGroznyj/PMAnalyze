@@ -256,9 +256,10 @@
     .kg-export{width:36px; height:36px}
     .btn.kg-toggle{min-height:44px; width:100%; justify-content:center; text-align:center}
     .btn.kg-toggle.running{padding-left:44px; padding-right:44px}
+    .search-row{display:block}
     .kg-search-row{gap:10px; align-items:stretch}
     .kg-inp-wrap{width:100%; min-width:0}
-    .kg-search-row .search-llm{width:100%; justify-content:flex-start; white-space:normal}
+    .kg-search-row .search-llm{display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap; width:100%; justify-content:flex-start; margin-top:8px}
     .kg-search-go{width:36px; height:36px}
     #kg-depth{width:100%}
     .kg-depth-row{align-items:center}
@@ -319,8 +320,8 @@
   .search-vcount{font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.05em;
     color:#6b6055; border:2px solid var(--ink); background:var(--mint); padding:4px 10px}
   .search-vcount b{color:var(--ink)}
-  .search-row{display:flex; align-items:center; gap:14px; margin-top:14px; flex-wrap:wrap}
-  .search-inp-wrap{position:relative; flex:1; min-width:260px}
+  .search-row{display:block; margin-top:14px}
+  .search-inp-wrap{position:relative; width:100%; min-width:0}
   #search-q{width:100%; box-sizing:border-box; border:2px solid var(--ink); background:#fff;
     padding:12px 48px 12px 14px; font-family:'Space Mono',monospace; font-size:13px; color:var(--ink)}
   #search-q:focus{outline:none; box-shadow:3px 3px 0 var(--orange)}
@@ -582,34 +583,49 @@
 
   /* PKB-GRAPH-CSS */
   .pkb-graph-wrap{margin-top:18px; border-top:2px dashed var(--ink); padding-top:16px}
-  .pkb-kg-head{display:flex; flex-direction:column; gap:12px}
-  .pkb-kg-search-row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
-  .pkb-kg-input{flex:1 1 240px}
-  .pkb-kg-llm{display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap}
+  .pkb-kg-head{border:2px solid var(--ink); background:rgba(30,26,22,.03); padding:12px; margin-bottom:12px; display:flex; flex-direction:column; gap:10px; overflow:hidden}
+  .pkb-kg-info{display:flex; align-items:center; justify-content:space-between; gap:10px}
+  /* перебиваем базовый .kg-search-row/.kg-inp-wrap повышенной специфичностью (2 класса) */
+  .pkb-graph-wrap .pkb-kg-search-row, .kg-search-row.pkb-kg-search-row{display:block !important; gap:0}
+  .pkb-graph-wrap .pkb-kg-search-row .pkb-kg-inp-wrap, .kg-inp-wrap.pkb-kg-inp-wrap{position:relative; display:block !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; min-width:0 !important}
+  #pkb-kg-query{width:100%; box-sizing:border-box; border:2px solid var(--ink); background:#fff; color:var(--ink); padding:10px 44px 10px 10px; font-size:14px; outline:none; transition:box-shadow .1s}
+  #pkb-kg-query:focus{box-shadow:3px 3px 0 var(--orange)}
+  .pkb-kg-llm{display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap; width:100%; justify-content:flex-start; margin-top:8px}
   .pkb-kg-depth-row{display:flex; align-items:center; gap:12px}
   .pkb-kg-depth-row .kg-depth-range{flex:1 1 auto}
-  .pkb-kg-canvas{position:relative; height:460px; margin-top:14px;
-    border:2px solid var(--ink); background:var(--paper); box-shadow:5px 5px 0 var(--ink); overflow:hidden}
-  .pkb-kg-card{margin-top:12px; border:2px solid var(--ink); background:var(--paper);
-    box-shadow:4px 4px 0 var(--ink); padding:14px 16px}
+  .pkb-kg-hint{font-size:11px; color:var(--ink); opacity:.55; line-height:1.45}
+  .pkb-kg-summary{background:#fff; padding:9px 12px; font-size:14px; color:#4a443c; line-height:1.5; border:2px solid var(--ink)}
+  .pkb-kg-summary p{margin:0 0 8px}
+  .pkb-kg-summary p:last-child{margin-bottom:0}
+  .pkb-kg-summary strong{color:#1E1A16}
+  .pkb-kg-summary code{background:rgba(30,26,22,.06); padding:1px 4px; border-radius:3px; font-size:12px}
+  .pkb-ref-link{display:inline-block; color:#fff; background:var(--orange); border:1.5px solid var(--ink); padding:0 5px; margin:0 1px; font-size:11px; font-weight:700; text-decoration:none; border-radius:3px; cursor:pointer; line-height:1.5; transition:transform .08s}
+  .pkb-ref-link:hover{transform:translateY(-1px); box-shadow:1px 1px 0 var(--ink)}
+  .pkb-kg-canvas{position:relative; height:460px; border:2px solid var(--ink); background:#fff; box-shadow:5px 5px 0 var(--ink); overflow:hidden; touch-action:none}
+  .pkb-kg-canvas canvas{touch-action:none}
+  .pkb-kg-card{position:absolute; right:12px; top:12px; z-index:25; width:min(420px, calc(100% - 24px)); max-height:calc(100% - 24px); overflow:auto; margin:0; border:2px solid var(--ink); background:var(--paper); box-shadow:4px 4px 0 var(--ink); padding:14px 16px}
   .pkb-kg-card h4{margin:0 0 8px; font-size:15px}
+  .pkb-kg-card .pkb-kg-card-close{position:absolute; top:8px; right:8px; min-width:32px; min-height:32px; border:2px solid var(--ink); background:#fff; cursor:pointer; font-size:18px; line-height:1}
   .pkb-kg-card .pkb-kg-card-text{font-size:13px; line-height:1.5; white-space:pre-wrap}
   .pkb-kg-card .pkb-kg-neigh{margin-top:10px; display:flex; flex-wrap:wrap; gap:6px}
-  .pkb-kg-card .pkb-kg-neigh button{font-size:11px; padding:4px 8px; border:2px solid var(--ink);
-    background:var(--sky); cursor:pointer; box-shadow:2px 2px 0 var(--ink)}
+  .pkb-kg-card .pkb-kg-neigh button{font-size:11px; padding:4px 8px; border:2px solid var(--ink); background:var(--sky); cursor:pointer; box-shadow:2px 2px 0 var(--ink)}
   .pkb-kg-card .pkb-kg-neigh button:hover{transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--orange)}
   @media(max-width:920px){
     .pkb-kg-canvas{height:380px}
-    .pkb-kg-search-row{gap:8px}
-    .pkb-kg-input{flex:1 1 100%}
+    .pkb-kg-search-row{gap:8px; align-items:stretch}
+    .pkb-kg-inp-wrap{flex:1 1 100%; width:100%}
+    .pkb-kg-llm{width:100%}
   }
   @media(max-width:500px){
-    .pkb-kg-canvas{height:320px; box-shadow:3px 3px 0 var(--ink)}
+    .pkb-kg-head{padding:10px}
+    .pkb-kg-canvas{height:340px; box-shadow:3px 3px 0 var(--ink)}
     .pkb-kg-search-row{flex-direction:column; align-items:stretch}
-    .pkb-kg-llm{justify-content:flex-start}
-    .kg-search-go, #pkb-kg-search-go{width:40px; height:40px; align-self:flex-end}
-    #pkb-kg-refresh{min-height:40px; padding:8px 14px}
+    .pkb-kg-inp-wrap{flex:1 1 100%; width:100%}
+    .pkb-kg-llm{justify-content:flex-start; width:100%}
+    .kg-search-go, #pkb-kg-search-go{width:40px; height:40px}
+    #pkb-kg-refresh{width:40px; height:40px; min-height:40px; padding:0}
     .pkb-kg-depth-row .kg-depth-range{min-height:24px}
+    .pkb-kg-card{left:8px; right:8px; top:8px; width:auto; max-height:calc(100% - 16px); padding:12px}
     .pkb-kg-card .pkb-kg-neigh button{min-height:36px; padding:8px 10px}
     #pkb-kg-load-full{width:100px; height:100px}
   }
@@ -639,6 +655,7 @@
     </div>
     <div class="actions">
       <button class="btn" id="btn-parser">⚙ запустить парсер</button>
+      <div class="mono" id="parser-run-info" style="font-size:10px;color:#6b6055">парсер: idle</div>
       <button class="btn" id="btn-reviews">✎ запустить ревью</button>
       <button class="btn kg-toggle" id="btn-kg-start">🕸 создание графа</button>
       <button class="btn accent" id="btn-digest">✉ дайджест на почту</button>
@@ -767,26 +784,34 @@
       <!-- PKB GRAPH BLOCK -->
       <div class="pkb-graph-wrap" id="pkb-graph-wrap" hidden>
         <div class="kg-head pkb-kg-head">
-          <div class="kg-info">
+          <div class="kg-info pkb-kg-info">
             <span class="mono" id="pkb-kg-counts">узлов: 0 · связей: 0</span>
-            <button class="btn pkb-kg-refresh" id="pkb-kg-refresh" type="button">Обновить</button>
-          </div>
-          <div class="kg-search-row pkb-kg-search-row">
-            <input class="pkb-input pkb-kg-input" id="pkb-kg-query" type="text"
-                   placeholder="Семантический поиск по вашему графу…" autocomplete="off">
-            <label class="search-llm pkb-kg-llm">
-              <input type="checkbox" id="pkb-kg-want-summary"> LLM-саммари
-            </label>
-            <button class="kg-search-go" id="pkb-kg-search-go" type="button" aria-label="Искать">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="16.5" y1="16.5" x2="21" y2="21"></line></svg>
+            <button class="kg-refresh pkb-kg-refresh" id="pkb-kg-refresh" type="button" title="Обновить граф" aria-label="Обновить граф">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+                <polyline points="21 3 21 9 15 9"></polyline>
+              </svg>
             </button>
           </div>
+          <div class="kg-search-row pkb-kg-search-row">
+            <div class="kg-inp-wrap pkb-kg-inp-wrap">
+              <input class="pkb-kg-input" id="pkb-kg-query" type="text" maxlength="500"
+                     placeholder="поиск по узлам вашего графа в реальном времени" autocomplete="off">
+              <button class="kg-search-go" id="pkb-kg-search-go" type="button" title="Семантический поиск + LLM" aria-label="Искать">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="20" y1="20" x2="16.6" y2="16.6"></line></svg>
+              </button>
+            </div>
+            <label class="filter mono search-llm pkb-kg-llm">
+              <input type="checkbox" id="pkb-kg-want-summary"> LLM-саммари
+            </label>
+          </div>
           <div class="kg-depth-row pkb-kg-depth-row">
-            <span class="mono kg-depth-label">Глубина связей</span>
+            <span class="mono kg-depth-label">глубина связей</span>
             <input type="range" min="0" max="4" value="1" step="1" id="pkb-kg-depth" class="kg-depth-range">
             <span class="mono kg-depth-badge" id="pkb-kg-depth-badge">1</span>
           </div>
-          <div class="kg-search-summary" id="pkb-kg-summary" hidden></div>
+          <div class="kg-search-hint mono pkb-kg-hint" id="pkb-kg-hint">Подсветка работает при вводе. Глубина применяется в реальном времени ползунком. LLM — только по кнопке-лупе.</div>
+          <div class="kg-search-summary pkb-kg-summary" id="pkb-kg-summary" hidden></div>
         </div>
         <div class="kg-canvas pkb-kg-canvas" id="pkb-kg-canvas">
           <button class="kg-load-full" id="pkb-kg-load-full" title="Показать граф целиком" aria-label="Показать граф">
@@ -800,8 +825,8 @@
           <div class="kg-loader" id="pkb-kg-loader" hidden>
             <div class="kg-ring"></div><div class="kg-dots"><i></i><i></i><i></i></div>
           </div>
+          <div class="kg-card pkb-kg-card" id="pkb-kg-card" hidden></div>
         </div>
-        <div class="kg-card pkb-kg-card" id="pkb-kg-card" hidden></div>
       </div>
     </div>
   </div>
@@ -1355,6 +1380,7 @@ async function post(url, body){
 }
 
 let parserInFlight = false;
+let parserProgressPoll = null;
 let reviewsInFlight = false;
 let reviewsProgressPoll = null;
 let reviewsProgressDone = 0;
@@ -1387,6 +1413,46 @@ function renderReviewsProgress(done, total, running){
       reviewsBtn.textContent = "✎ запустить ревью";
     }, 3500);
   }
+}
+
+function renderParserProgress(d){
+  const el = $("#parser-run-info");
+  if(!el) return;
+  const total = Number(d.total_sources||0);
+  const done = Number(d.done_sources||0);
+  const raw = Number(d.found_raw_total||0);
+  const fin = Number(d.found_final_total||0);
+  const cur = (d.current_source||"").trim();
+  if(d.running){
+    el.textContent = `парсер: ${cur || "подготовка"} · ${done}/${total} · найдено ${fin} (raw ${raw})`;
+    return;
+  }
+  if(total>0){
+    el.textContent = `парсер: завершен · ${done}/${total} · найдено ${fin} (raw ${raw})`;
+    return;
+  }
+  el.textContent = "парсер: idle";
+}
+
+async function syncParserProgress(){
+  try{
+    const r = await fetch('/api/run/parser/progress');
+    const d = await r.json();
+    if(!d.ok) return;
+    renderParserProgress(d);
+    if(!d.running && parserProgressPoll){
+      clearInterval(parserProgressPoll);
+      parserProgressPoll = null;
+      loadStats();
+      loadSearchStats();
+    }
+  }catch(_){/* silent */}
+}
+
+function startParserProgressPoll(){
+  if(parserProgressPoll) return;
+  syncParserProgress();
+  parserProgressPoll = setInterval(syncParserProgress, 2500);
 }
 
 function stopReviewsProgressPoll(){
@@ -1433,8 +1499,10 @@ $("#btn-parser").onclick = async e=>{
     const d = await post("/api/run/parser", {include_sources});
     if(d.ok){
       toast("Парсер запущен (фоново)");
+      startParserProgressPoll();
     }else if(d.__http===409 || d.status==="busy"){
       toast(busyReasonText(d.reason), 4200);
+      startParserProgressPoll();
     }else{
       toast("Ошибка запуска парсера", 4200);
     }
@@ -2045,6 +2113,6 @@ setInterval(loadStats, 60000);
 setInterval(loadSearchStats, 60000);
 </script>
 <script src="/static/js/kg_panel.js"></script>
-<script src="/static/js/pkb_panel.js"></script>
+<script src="/static/js/pkb_panel.js?v=20260828f"></script>
 </body>
 </html>

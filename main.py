@@ -2139,6 +2139,26 @@ async def run_parser(body: RunParserReq | None = None, background: BackgroundTas
     return {"ok": True, "status": "started", "include_sources": include_sources}
 
 
+@app.get("/api/run/parser/progress")
+async def run_parser_progress():
+    p = await pipeline.get_parser_progress()
+    return {
+        "ok": True,
+        "running": bool(p.get("running")),
+        "total_sources": int(p.get("total_sources") or 0),
+        "done_sources": int(p.get("done_sources") or 0),
+        "current_source": p.get("current_source") or "",
+        "found_raw_total": int(p.get("found_raw_total") or 0),
+        "found_final_total": int(p.get("found_final_total") or 0),
+        "per_source_raw": p.get("per_source_raw") or {},
+        "per_source_final": p.get("per_source_final") or {},
+        "dropped_old_by_source": p.get("dropped_old_by_source") or {},
+        "errors": p.get("errors") or {},
+        "started_at": p.get("started_at"),
+        "updated_at": p.get("updated_at"),
+    }
+
+
 @app.post("/api/run/reviews")
 async def run_reviews(background: BackgroundTasks, limit: int = 50, mode: str = "only"):
     """Обработать ревью без нового сбора.

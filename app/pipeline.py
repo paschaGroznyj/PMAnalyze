@@ -112,6 +112,21 @@ class PMAnalyzePipeline:
 
         self._parser_state_lock = asyncio.Lock()
         self._parser_running = False
+        self._parser_progress_lock = asyncio.Lock()
+        self._parser_progress = {
+            "running": False,
+            "total_sources": 0,
+            "done_sources": 0,
+            "current_source": "",
+            "found_raw_total": 0,
+            "found_final_total": 0,
+            "per_source_raw": {},
+            "per_source_final": {},
+            "dropped_old_by_source": {},
+            "errors": {},
+            "started_at": None,
+            "updated_at": None,
+        }
 
         self._reviews_state_lock = asyncio.Lock()
         self._reviews_running = False
@@ -795,53 +810,70 @@ class PMAnalyzePipeline:
         if self.settings.parser_api_key:
             headers["X-Api-Key"] = self.settings.parser_api_key
 
-        payload = {"max_per_source": int(self.settings.max_per_source), "ui_lang": "en"}
-        if parser_sources:
-            payload["include_sources"] = [str(s).strip().lower() for s in parser_sources if str(s).strip()]
+        default_sources = ["arxiv_api","arxiv_html","crossref","core_api","fluxicon","google_scholar"]
+        source_list = [str(s).strip().lower() for s in (parser_sources or default_sources) if str(s).strip()]
+        if not source_list:
+            source_list = default_sources
 
+        await self._parser_progress_start(source_list)
+        out: list[dict] = []
         try:
             async with httpx.AsyncClient(timeout=self.settings.parser_timeout) as client:
-                r = await client.post(self.settings.parser_run_url, headers=headers, json=payload)
-                r.raise_for_status()
-                data = r.json()
+                for src in source_list:
+                    await self._parser_progress_source_start(src)
+                    payload = {
+                        "max_per_source": int(self.settings.max_per_source),
+                        "ui_lang": "en",
+                        "include_sources": [src],
+                    }
+                    try:
+                        r = await client.post(self.settings.parser_run_url, headers=headers, json=payload)
+                        r.raise_for_status()
+                        data = r.json()
+                        if not data.get("ok"):
+                            err = data.get("error") or data.get("errors") or "unknown"
+                            await self._parser_progress_source_done(src, 0, 0, 0, str(err))
+                            print(f"[pmanalyze] collect parser_not_ok source={src} url={self.settings.parser_run_url} error={err}")
+                            continue
 
-            if not data.get("ok"):
-                err = data.get("error") or data.get("errors") or "unknown"
-                print(f"[pmanalyze] collect parser_not_ok url={self.settings.parser_run_url} error={err}")
-                return []
+                        arts = data.get("articles", []) or []
+                        src_raw = (data.get("sources_raw") or data.get("sources") or {})
+                        src_fin = (data.get("sources") or {})
+                        src_drop = (data.get("dropped_old_by_source") or {})
+                        raw_cnt = int(src_raw.get(src, len(arts)) or 0)
+                        fin_cnt = int(src_fin.get(src, len(arts)) or 0)
+                        drop_cnt = int(src_drop.get(src, 0) or 0)
+                        errs = data.get("errors") or {}
+                        src_err = errs.get(src, "") if isinstance(errs, dict) else ""
 
-            articles = data.get("articles", [])
-            total = data.get("total")
-            sources = data.get("sources")
-            errors = data.get("errors")
-            if (not articles) or errors:
-                print(
-                    f"[pmanalyze] collect summary url={self.settings.parser_run_url} "
-                    f"total={total} articles={len(articles)} sources={sources} errors={errors}"
-                )
-            return articles
+                        await self._parser_progress_source_done(src, raw_cnt, fin_cnt, drop_cnt, str(src_err or ""))
+                        out.extend(arts)
+                        print(f"[pmanalyze] collect source={src} raw={raw_cnt} final={fin_cnt} dropped_old={drop_cnt}")
 
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code if e.response is not None else "n/a"
-            req_url = str(e.request.url) if e.request is not None else self.settings.parser_run_url
-            body = ""
-            try:
-                if e.response is not None:
-                    body = (e.response.text or "")[:700]
-            except Exception:
-                body = "<response_text_unavailable>"
-            print(
-                f"[pmanalyze] collect http_error type={type(e).__name__} status={status} "
-                f"url={req_url} payload={payload} body={body}"
-            )
-            return []
+                    except httpx.HTTPStatusError as e:
+                        status = e.response.status_code if e.response is not None else "n/a"
+                        req_url = str(e.request.url) if e.request is not None else self.settings.parser_run_url
+                        body = ""
+                        try:
+                            if e.response is not None:
+                                body = (e.response.text or "")[:700]
+                        except Exception:
+                            body = "<response_text_unavailable>"
+                        await self._parser_progress_source_done(src, 0, 0, 0, f"http_{status}")
+                        print(
+                            f"[pmanalyze] collect http_error type={type(e).__name__} status={status} "
+                            f"url={req_url} source={src} payload={payload} body={body}"
+                        )
+                    except Exception as e:
+                        await self._parser_progress_source_done(src, 0, 0, 0, repr(e))
+                        print(
+                            f"[pmanalyze] collect error type={type(e).__name__} repr={repr(e)} "
+                            f"url={self.settings.parser_run_url} source={src} payload={payload}"
+                        )
 
-        except Exception as e:
-            print(
-                f"[pmanalyze] collect error type={type(e).__name__} repr={repr(e)} "
-                f"url={self.settings.parser_run_url} payload={payload}"
-            )
-            return []
+            return out
+        finally:
+            await self._parser_progress_finish()
 
     async def _upsert_articles(self, articles: list[dict]) -> list[int]:
         """Upsert новых статей + фильтрация дублей по title и canonical (source, external_id)."""
@@ -1344,6 +1376,66 @@ class PMAnalyzePipeline:
     async def _release_parser_run(self):
         async with self._parser_state_lock:
             self._parser_running = False
+
+    async def _parser_progress_start(self, sources: list[str]):
+        now = datetime.now(timezone.utc).isoformat()
+        src = [str(s).strip().lower() for s in (sources or []) if str(s).strip()]
+        async with self._parser_progress_lock:
+            self._parser_progress = {
+                "running": True,
+                "total_sources": len(src),
+                "done_sources": 0,
+                "current_source": "",
+                "found_raw_total": 0,
+                "found_final_total": 0,
+                "per_source_raw": {s: 0 for s in src},
+                "per_source_final": {s: 0 for s in src},
+                "dropped_old_by_source": {s: 0 for s in src},
+                "errors": {},
+                "started_at": now,
+                "updated_at": now,
+            }
+
+    async def _parser_progress_source_start(self, source: str):
+        now = datetime.now(timezone.utc).isoformat()
+        s = (source or "").strip().lower()
+        async with self._parser_progress_lock:
+            self._parser_progress["current_source"] = s
+            self._parser_progress["updated_at"] = now
+
+    async def _parser_progress_source_done(self, source: str, raw_cnt: int, final_cnt: int, dropped_old: int = 0, err: str = ""):
+        now = datetime.now(timezone.utc).isoformat()
+        s = (source or "").strip().lower()
+        async with self._parser_progress_lock:
+            psr = dict(self._parser_progress.get("per_source_raw") or {})
+            psf = dict(self._parser_progress.get("per_source_final") or {})
+            pso = dict(self._parser_progress.get("dropped_old_by_source") or {})
+            errs = dict(self._parser_progress.get("errors") or {})
+            psr[s] = int(raw_cnt or 0)
+            psf[s] = int(final_cnt or 0)
+            pso[s] = int(dropped_old or 0)
+            if err:
+                errs[s] = str(err)[:300]
+            self._parser_progress["per_source_raw"] = psr
+            self._parser_progress["per_source_final"] = psf
+            self._parser_progress["dropped_old_by_source"] = pso
+            self._parser_progress["errors"] = errs
+            self._parser_progress["done_sources"] = int(self._parser_progress.get("done_sources", 0)) + 1
+            self._parser_progress["found_raw_total"] = int(self._parser_progress.get("found_raw_total", 0)) + int(raw_cnt or 0)
+            self._parser_progress["found_final_total"] = int(self._parser_progress.get("found_final_total", 0)) + int(final_cnt or 0)
+            self._parser_progress["current_source"] = ""
+            self._parser_progress["updated_at"] = now
+
+    async def _parser_progress_finish(self):
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._parser_progress_lock:
+            self._parser_progress["running"] = False
+            self._parser_progress["current_source"] = ""
+            self._parser_progress["updated_at"] = now
+
+    async def get_parser_progress(self) -> dict:
+        async with self._parser_progress_lock:
+            return dict(self._parser_progress)
 
     async def _try_claim_reviews_run(self) -> bool:
         async with self._reviews_state_lock:

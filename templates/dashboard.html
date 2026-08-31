@@ -309,7 +309,8 @@
   /* SVG-статус погоды фоном блока */
   .wx-sky{position:absolute; right:-10px; top:44%; transform:translateY(-50%);
     width:132px; height:132px; opacity:.24; z-index:1; pointer-events:none}
-  .wx-sky svg{width:100%; height:100%}
+  .wx-sky{display:flex; align-items:center; justify-content:center}
+  .wx-sky svg{width:100%; height:100%; display:block}
   .wx-main > div{position:relative; z-index:2}
 
   @media(max-width:920px){
@@ -335,9 +336,12 @@
        72px + вертикальные отступы карточки (16px сверху/снизу) < min-height,
        поэтому при top:50% translateY(-50%) не упирается в края и не режется */
     .wx-sky{
-      position:absolute; right:10px; top:50%; transform:translateY(-50%);
-      width:72px; height:72px; opacity:.24; z-index:1; pointer-events:none;
+      position:absolute; right:6px; top:50%; transform:translateY(-50%);
+      width:84px; height:84px; opacity:.24; z-index:1; pointer-events:none;
     }
+    /* на мобилке контейнер меньше — гасим внутренний подъём фигуры,
+       чтобы иконка стояла ровно по центру, а не уезжала вверх */
+    .wx-sky svg > g{transform:translate(0,4px)}
   }
 
   /* ===== MODELS HEALTH (cloud.ru) — справа от погоды (ПК), снизу (мобилка) ===== */
@@ -2192,7 +2196,11 @@ function wxIcon(cc){
   // preserveAspectRatio: центрируем контент; обёртка <g> с лёгким сдвигом вверх
   // компенсирует то, что фигуры облаков нарисованы в нижней половине viewBox,
   // чтобы иконка визуально стояла по центру, а не прилипала к верхнему краю.
-  return `<svg viewBox="0 0 120 120" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"><g transform="translate(0,-8)">${inner}</g></svg>`;
+  // ВАЖНО: фигуры облаков нарисованы в нижней половине viewBox (примерно y=44..96),
+  // из-за чего центр масс уходит вниз и визуально иконка липнет к верху блока.
+  // Центрируем сам контент внутри viewBox сдвигом вверх на ~10, тогда при любом
+  // размере контейнера иконка стоит по вертикальному центру. viewBox не режем.
+  return `<svg viewBox="0 0 120 120" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"><g transform="translate(0,-16)">${inner}</g></svg>`;
 }
 
 function wxTick(){

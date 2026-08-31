@@ -1311,6 +1311,7 @@
     </div>
     <div class="mono" id="bridge-status" style="margin-top:8px;color:#6b6055">bridge idle</div>
     <div class="search-summary" id="bridge-reply" style="margin-top:8px"></div>
+    <div id="bridge-react-root" style="margin-top:10px"></div>
   </div>
 
 <script>
@@ -2335,6 +2336,61 @@ async function bridgePoll(){
 document.querySelector('#bridge-send')?.addEventListener('click', bridgeSend);
 document.querySelector('#bridge-q')?.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); bridgeSend(); }});
 
+</script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script>
+(function(){
+  const rootEl = document.getElementById('bridge-react-root');
+  if(!rootEl || !window.React || !window.ReactDOM) return;
+  const e = React.createElement;
+  function App(){
+    const [prompt, setPrompt] = React.useState('React->CatchPM smoke: ответь OK');
+    const [chatId, setChatId] = React.useState(425826);
+    const [userId, setUserId] = React.useState(56);
+    const [agentModel, setAgentModel] = React.useState('universal');
+    const [status, setStatus] = React.useState('idle');
+    const [reply, setReply] = React.useState('');
+
+    async function send(){
+      try{
+        setStatus('sending...');
+        const r = await fetch('/api/bridge/catchpm/send', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({prompt, chat_id:Number(chatId), user_id:Number(userId), user_name:'dashpm-user', tab_num:'dashpm', agent_model:agentModel, selected_tools:[], context_size:'30'})
+        });
+        const d = await r.json();
+        if(!d.ok){ setStatus('error: '+(d.error||'send_failed')); return; }
+        const req = d.request_id; setStatus('sent, polling...');
+        for(let i=0;i<25;i++){
+          await new Promise(res=>setTimeout(res,1800));
+          const pr = await fetch('/api/bridge/catchpm/poll', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({request_id:req})});
+          const pd = await pr.json();
+          if(pd.ok && pd.ready){ setReply((pd.message&&pd.message.message)||''); setStatus('done'); return; }
+        }
+        setStatus('timeout');
+      }catch(err){ setStatus('error: '+String(err)); }
+    }
+
+    return e('div', {className:'mono', style:{border:'1px dashed #e7d9c8', borderRadius:'10px', padding:'10px'}}, [
+      e('div', {key:'h', style:{fontWeight:'700', marginBottom:'8px'}}, 'React demo: CatchPM bridge'),
+      e('input', {key:'p', value:prompt, onChange:(ev)=>setPrompt(ev.target.value), style:{width:'100%',marginBottom:'8px'}, placeholder:'prompt'}),
+      e('div', {key:'row', style:{display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'8px'}}, [
+        e('input', {key:'c', type:'number', value:chatId, onChange:(ev)=>setChatId(ev.target.value), style:{width:'120px'}}),
+        e('input', {key:'u', type:'number', value:userId, onChange:(ev)=>setUserId(ev.target.value), style:{width:'90px'}}),
+        e('select', {key:'m', value:agentModel, onChange:(ev)=>setAgentModel(ev.target.value), style:{width:'160px'}}, [
+          e('option', {key:'universal', value:'universal'}, 'universal (gemini)'),
+          e('option', {key:'coder', value:'coder'}, 'coder (gpt)'),
+          e('option', {key:'designer', value:'designer'}, 'designer (claude)')
+        ]),
+        e('button', {key:'b', onClick:send}, 'Send')
+      ]),
+      e('div', {key:'s', style:{marginBottom:'6px'}}, 'status: '+status),
+      e('pre', {key:'r', style:{whiteSpace:'pre-wrap', margin:0}}, reply || '—')
+    ]);
+  }
+  ReactDOM.createRoot(rootEl).render(e(App));
+})();
 </script>
 <script src="/static/js/kg_panel.js"></script>
 <script src="/static/js/pkb_panel.js?v=20260828f"></script>

@@ -321,9 +321,12 @@
     .wx-widget{width:100%; margin-top:12px; padding:16px 18px; gap:12px}
     /* мобилка: восстанавливаем padding-right и выставляем width:100% для блока.
        иконка абсолютом справа */
+    /* НЕ растягиваем блок на всю колонку: align-self:start + компактная высота,
+       тогда центр блока = центр текста, и абсолютная иконка top:50% встаёт
+       ровно по центру текста, а не улетает вверх */
     .wx-main{
-      min-width:0; min-height:120px; overflow:visible;
-      padding:8px 88px 8px 0; align-self:stretch;
+      min-width:0; min-height:0; overflow:visible;
+      padding:8px 92px 8px 0; align-self:start;
       display:flex; flex-direction:column; justify-content:center; gap:4px;
     }
     .wx-main > div{position:relative; z-index:2}
@@ -332,14 +335,21 @@
     .wx-temp{font-size:32px}
     /* вторичный текст крупнее и контрастнее, чтобы читался на телефоне */
     .wx-sub{font-size:12px; color:#5a5348}
-    /* иконка: центр по вертикали, целиком в пределах карточки.
-       72px + вертикальные отступы карточки (16px сверху/снизу) < min-height,
-       поэтому при top:50% translateY(-50%) не упирается в края и не режется */
+    /* ПРИЧИНА бага "иконка сверху": .wx-main на мобилке растянут во всю высоту
+       столбца, но текст (city/time/temp/sub) из-за justify-content:center сидит
+       по центру, а не заполняет блок. Абсолютная иконка с top:50% центрировалась
+       по ВСЕМУ .wx-main и вставала ВЫШЕ текста. Поэтому здесь принудительно
+       переопределяем: justify-content:center у .wx-main оставляем, а иконку
+       ставим ровно по центру видимого текстового кластера. Так как текст
+       центрирован, его геом.центр совпадает с центром блока — значит иконке
+       нужен именно центр блока БЕЗ смещения вверх. Ставим top:50% с реальным
+       центрированием flex-контейнера иконки. */
     .wx-sky{
-      position:absolute; right:6px; top:50%; transform:translateY(-50%);
+      position:absolute; right:6px; top:50%; bottom:auto;
+      transform:translateY(-50%);
       width:84px; height:84px; opacity:.24; z-index:1; pointer-events:none;
+      display:flex; align-items:center; justify-content:center;
     }
-
   }
 
   /* ===== MODELS HEALTH (cloud.ru) — справа от погоды (ПК), снизу (мобилка) ===== */

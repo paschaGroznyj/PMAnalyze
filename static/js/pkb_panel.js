@@ -6,9 +6,11 @@
   var pollTimer = null;
   var keyConfirmed = false;   // ключ подтверждён в текущей сессии
   var pendingUrl = null;      // ссылка, которую ждём запустить после ключа
+  var pkbLastFocusNode = null;
+  var pkbLastFocusTs = 0;
 
   // ===== PKB debug logging =====
-  var PKB_DBG = true;
+  var PKB_DBG = false;
   try {
     if (window && window.localStorage && window.localStorage.getItem("pkb_debug") === "0") PKB_DBG = false;
     if (window && window.location && /(?:\?|&)pkb_debug=0(?:&|$)/.test(window.location.search)) PKB_DBG = false;
@@ -453,7 +455,7 @@
       nid = pkbNormNodeId(nid);
       if (nid) {
         pkbDbg("vis:click->focus", {nid: nid});
-        pkbFocusNode(nid, true);
+        pkbOpenNodeCardSafe(nid);
       } else {
         pkbDbgWarn("vis:click->emptyNode closeCard");
         pkbCloseCard();
@@ -464,26 +466,25 @@
       var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
       pkbDbg("vis:selectNode", {nodes: params && params.nodes ? params.nodes : [], rawNode: nid});
       nid = pkbNormNodeId(nid);
-      if (nid) pkbFocusNode(nid, true);
+      if (nid) pkbOpenNodeCardSafe(nid);
     });
     pkbNet.on("doubleClick", function (params) {
       var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
       pkbDbg("vis:doubleClick", {nodes: params && params.nodes ? params.nodes : [], rawNode: nid});
       nid = pkbNormNodeId(nid);
-      if (nid) pkbFocusNode(nid, true);
+      if (nid) pkbOpenNodeCardSafe(nid);
     });
     pkbNet.on("hold", function (params) {
       var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
       pkbDbg("vis:hold", {nodes: params && params.nodes ? params.nodes : [], rawNode: nid});
       nid = pkbNormNodeId(nid);
-      if (nid) pkbFocusNode(nid, true);
+      if (nid) pkbOpenNodeCardSafe(nid);
     });
 
     // дополнительная телеметрия vis событий
     pkbNet.on("select", function (params) { pkbDbg("vis:select", params || {}); });
     pkbNet.on("deselectNode", function (params) { pkbDbg("vis:deselectNode", params || {}); });
     pkbNet.on("dragStart", function (params) { pkbDbg("vis:dragStart", params || {}); });
-    pkbNet.on("dragging", function (params) { if (params && params.nodes && params.nodes.length) pkbDbg("vis:draggingNode", params.nodes); });
     pkbNet.on("dragEnd", function (params) { pkbDbg("vis:dragEnd", params || {}); });
     pkbNet.on("zoom", function (params) { pkbDbg("vis:zoom", {scale: params && params.scale}); });
     pkbNet.on("release", function (params) { pkbDbg("vis:release", params || {}); });
@@ -502,6 +503,17 @@
     pkbDbg("pkbBuildNetwork:ready", {pkbBuilt: pkbBuilt, hasCard: !!cardAtReady, hostChildren: host && host.children ? host.children.length : null});
   }
 
+  function pkbOpenNodeCardSafe(nodeId) {
+    var now = Date.now();
+    if (pkbLastFocusNode === nodeId && (now - pkbLastFocusTs) < 260) {
+      pkbDbg("pkbOpenNodeCardSafe:dedup", {nodeId: nodeId, dt: now - pkbLastFocusTs});
+      return;
+    }
+    pkbLastFocusNode = nodeId;
+    pkbLastFocusTs = now;
+    pkbFocusNode(nodeId, true);
+  }
+
   function pkbFocusNode(nodeId, openCard) {
     nodeId = pkbNormNodeId(nodeId);
     pkbDbg("pkbFocusNode:call", {nodeId: nodeId, openCard: !!openCard, hasNet: !!pkbNet});
@@ -511,7 +523,8 @@
     }
     try {
       pkbNet.selectNodes([nodeId]);
-      pkbNet.focus(nodeId, { scale: 1.15, animation: { duration: 500, easingFunction: "easeInOutQuad" } });
+      // Без анимированного focus: он вызывал рывки и блокирующие микро-анимации после клика
+      pkbNet.moveTo({ position: pkbNet.getPosition(nodeId), scale: pkbNet.getScale(), animation: false });
     } catch (e) {}
     if (pkbNodesDS) {
       try {
@@ -533,7 +546,7 @@
   function pkbEnableCardScrollIsolation(card) {
     if (!card || card.__pkbWheelBound) return;
     var stop = function (e) { e.stopPropagation(); };
-    ["wheel", "mousewheel", "DOMMouseScroll", "touchstart", "touchmove", "pointerdown", "pointermove"].forEach(function (evt) {
+    ["wheel", "mousewheel", "DOMMouseScroll", "touchstart", "touchmove"].forEach(function (evt) {
       card.addEventListener(evt, stop, { passive: true });
     });
     card.__pkbWheelBound = true;
@@ -570,7 +583,7 @@
       var x = card.querySelector(".pkb-kg-card-close");
       if (x) x.addEventListener("click", pkbCloseCard);
       Array.prototype.forEach.call(card.querySelectorAll(".pkb-kg-neigh button"), function (b) {
-        b.addEventListener("click", function () { pkbFocusNode(b.getAttribute("data-nid"), true); });
+        b.addEventListener("click", function () { pkbOpenNodeCardSafe(b.getAttribute("data-nid")); });
       });
     } catch (e) {
       pkbDbgErr("pkbOpenCard:error", {nodeId: nodeId, message: e && e.message ? e.message : String(e)});
@@ -704,7 +717,7 @@
       a.addEventListener("click", function (e) {
         e.preventDefault();
         var nid = a.getAttribute("data-nid");
-        if (nid) pkbFocusNode(nid, true);
+        if (nid) pkbOpenNodeCardSafe(nid);
       });
     });
   }

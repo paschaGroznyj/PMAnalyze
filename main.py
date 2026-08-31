@@ -88,7 +88,7 @@ digest_task: asyncio.Task | None = None
 digest_stop: asyncio.Event = asyncio.Event()
 kg_manager: KGRunManager | None = None
 
-_bridge_producer: AIOKafkaProducer | None = None
+_bridge_producer = None
 _bridge_consumer_task: asyncio.Task | None = None
 _bridge_inbox: dict[int, list[dict]] = {}
 _bridge_requests: dict[str, dict] = {}

@@ -318,9 +318,11 @@
   }
   @media(max-width:500px){
     .wx-widget{width:100%; margin-top:12px}
-    /* мобилка: та же схема, что на ПК — флекс-колонка + иконка абсолютом справа */
+    /* мобилка: та же схема, что на ПК — флекс-колонка + иконка абсолютом справа.
+       ключевое: резервируем место справа под иконку, чтобы текст в неё не залезал */
     .wx-main{
-      min-width:0; min-height:96px; overflow:hidden; padding-right:0;
+      min-width:0; min-height:96px; overflow:hidden;
+      padding-right:96px;
       display:flex; flex-direction:column; justify-content:center; gap:2px;
     }
     .wx-main > div{position:relative; z-index:2}

@@ -1291,6 +1291,28 @@
 
 <div id="toast"></div>
 
+
+  <div class="panel" id="bridge-panel">
+    <h3>CatchPM bridge</h3>
+    <div class="search-row" style="margin-top:10px">
+      <div class="search-inp-wrap">
+        <input type="text" id="bridge-q" maxlength="1500" autocomplete="off" placeholder="запрос в агент CatchPM">
+        <button class="search-go" id="bridge-send" title="Отправить в CatchPM" aria-label="Отправить в CatchPM">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"></path><path d="m12 6 6 6-6 6"></path></svg>
+        </button>
+      </div>
+      <input id="bridge-chat-id" type="number" value="425826" style="width:120px">
+      <input id="bridge-user-id" type="number" value="56" style="width:90px">
+      <select id="bridge-agent-model" class="kg-layout-mode" style="width:160px">
+        <option value="universal">universal (gemini)</option>
+        <option value="coder">coder (gpt)</option>
+        <option value="designer">designer (claude)</option>
+      </select>
+    </div>
+    <div class="mono" id="bridge-status" style="margin-top:8px;color:#6b6055">bridge idle</div>
+    <div class="search-summary" id="bridge-reply" style="margin-top:8px"></div>
+  </div>
+
 <script>
 const $ = s => document.querySelector(s);
 const CATS = ["Общие принципы","Методики исследования","PM-лог","Проверка качества","Без категории"];
@@ -2265,6 +2287,54 @@ loadStats();
 loadArticles(1);
 setInterval(loadStats, 60000);
 setInterval(loadSearchStats, 60000);
+
+let bridgeReqId = null;
+let bridgePollTimer = null;
+
+async function bridgeSend(){
+  const q = (document.querySelector('#bridge-q')?.value || '').trim();
+  if(!q) return;
+  const chat_id = Number(document.querySelector('#bridge-chat-id')?.value || 425826);
+  const user_id = Number(document.querySelector('#bridge-user-id')?.value || 56);
+  const agent_model = (document.querySelector('#bridge-agent-model')?.value || 'universal');
+  document.querySelector('#bridge-status').textContent = 'отправляю в CatchPM…';
+  const r = await fetch('/api/bridge/catchpm/send', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({prompt:q, chat_id, user_id, user_name:'dashpm-user', tab_num:'dashpm', agent_model, selected_tools:[], context_size:'30'})
+  });
+  const d = await r.json();
+  if(!d.ok){
+    document.querySelector('#bridge-status').textContent = 'ошибка: ' + (d.error || 'send_failed');
+    return;
+  }
+  bridgeReqId = d.request_id;
+  document.querySelector('#bridge-status').textContent = 'запрос отправлен, жду ответ…';
+  if(bridgePollTimer) clearInterval(bridgePollTimer);
+  bridgePollTimer = setInterval(bridgePoll, 1800);
+}
+
+async function bridgePoll(){
+  if(!bridgeReqId) return;
+  const r = await fetch('/api/bridge/catchpm/poll', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({request_id: bridgeReqId})
+  });
+  const d = await r.json();
+  if(!d.ok){
+    document.querySelector('#bridge-status').textContent = 'poll error: ' + (d.error || 'unknown');
+    return;
+  }
+  if(!d.ready) return;
+  const msg = d.message || {};
+  document.querySelector('#bridge-reply').textContent = msg.message || 'пустой ответ';
+  document.querySelector('#bridge-status').textContent = 'ответ получен';
+  clearInterval(bridgePollTimer);
+  bridgePollTimer = null;
+}
+
+document.querySelector('#bridge-send')?.addEventListener('click', bridgeSend);
+document.querySelector('#bridge-q')?.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); bridgeSend(); }});
+
 </script>
 <script src="/static/js/kg_panel.js"></script>
 <script src="/static/js/pkb_panel.js?v=20260828f"></script>

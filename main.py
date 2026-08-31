@@ -26,6 +26,7 @@ from urllib.parse import urlparse, parse_qs
 from fastapi import FastAPI, BackgroundTasks, Request, Response, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
+from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from pydantic import BaseModel, Field
 
 from app.pipeline import PMAnalyzePipeline, Settings
@@ -68,12 +69,22 @@ AUTHENTIK_HEADER_UID = os.getenv("AUTHENTIK_HEADER_UID", "x-authentik-uid")
 AUTHENTIK_HEADER_EMAIL = os.getenv("AUTHENTIK_HEADER_EMAIL", "x-authentik-email")
 AUTHENTIK_HEADER_GROUPS = os.getenv("AUTHENTIK_HEADER_GROUPS", "x-authentik-groups")
 
+CATCHPM_KAFKA_BOOTSTRAP = os.getenv("CATCHPM_KAFKA_BOOTSTRAP", "172.28.0.10:9092")
+CATCHPM_CHAT_TOPIC = os.getenv("CATCHPM_CHAT_TOPIC", "chat-messages")
+CATCHPM_TASK_EVENTS_TOPIC = os.getenv("CATCHPM_TASK_EVENTS_TOPIC", "task-events")
+CATCHPM_BRIDGE_ENABLED = os.getenv("CATCHPM_BRIDGE_ENABLED", "1").lower() in ("1", "true", "yes", "on")
+
 pipeline: PMAnalyzePipeline | None = None
 pool: asyncpg.Pool | None = None
 mailer: EmailSender | None = None
 digest_task: asyncio.Task | None = None
 digest_stop: asyncio.Event = asyncio.Event()
 kg_manager: KGRunManager | None = None
+
+_bridge_producer: AIOKafkaProducer | None = None
+_bridge_consumer_task: asyncio.Task | None = None
+_bridge_inbox: dict[int, list[dict]] = {}
+_bridge_requests: dict[str, dict] = {}
 
 
 @asynccontextmanager
@@ -370,6 +381,11 @@ async def lifespan(app: FastAPI):
 
     await pipeline.start()
 
+    if CATCHPM_BRIDGE_ENABLED:
+        await _bridge_get_producer()
+        global _bridge_consumer_task
+        _bridge_consumer_task = asyncio.create_task(_bridge_consume_loop())
+
     digest_stop.clear()
     if DIGEST_ENABLED:
         digest_task = asyncio.create_task(_digest_scheduler_loop())
@@ -384,6 +400,14 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
         digest_task = None
+
+    if _bridge_consumer_task:
+        _bridge_consumer_task.cancel()
+        try:
+            await _bridge_consumer_task
+        except Exception:
+            pass
+    await _bridge_stop_producer()
 
     if pipeline:
         await pipeline.stop()
@@ -403,6 +427,76 @@ class _DropNoisyProgressEndpoint(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_DropNoisyProgressEndpoint())
 api_logger = logging.getLogger("uvicorn.error")
+
+
+async def _bridge_get_producer() -> AIOKafkaProducer:
+    global _bridge_producer
+    if _bridge_producer is None:
+        _bridge_producer = AIOKafkaProducer(
+            bootstrap_servers=CATCHPM_KAFKA_BOOTSTRAP,
+            value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
+            request_timeout_ms=8000,
+        )
+        await _bridge_producer.start()
+    return _bridge_producer
+
+
+async def _bridge_stop_producer() -> None:
+    global _bridge_producer
+    if _bridge_producer is not None:
+        try:
+            await _bridge_producer.stop()
+        except Exception:
+            pass
+        _bridge_producer = None
+
+
+async def _bridge_consume_loop() -> None:
+    consumer = AIOKafkaConsumer(
+        CATCHPM_CHAT_TOPIC,
+        bootstrap_servers=CATCHPM_KAFKA_BOOTSTRAP,
+        group_id="dashpm-bridge-group",
+        value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+        auto_offset_reset="latest",
+    )
+    await consumer.start()
+    api_logger.info("[dashpm-bridge] consumer started topic=%s", CATCHPM_CHAT_TOPIC)
+    try:
+        async for msg in consumer:
+            payload = msg.value or {}
+            if not payload.get("is_from_bot"):
+                continue
+            if str(payload.get("type_agent") or "") != "pm":
+                continue
+            try:
+                chat_id = int(payload.get("chat_id") or 0)
+            except Exception:
+                chat_id = 0
+            if chat_id <= 0:
+                continue
+            item = {
+                "message": str(payload.get("message") or ""),
+                "message_id": payload.get("message_id"),
+                "action": payload.get("action"),
+                "tool_trace": payload.get("tool_trace"),
+                "agent_model": payload.get("agent_model"),
+                "tokens_usage": payload.get("tokens_usage") or {"input_tokens":0,"output_tokens":0,"total_tokens":0},
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+            bucket = _bridge_inbox.setdefault(chat_id, [])
+            bucket.append(item)
+            if len(bucket) > 100:
+                del bucket[:-100]
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        api_logger.warning(f"[dashpm-bridge] consumer error: {e}")
+    finally:
+        try:
+            await consumer.stop()
+        except Exception:
+            pass
+        api_logger.info("[dashpm-bridge] consumer stopped")
 
 
 def _parse_emails_csv(raw: str) -> list[str]:
@@ -2985,6 +3079,74 @@ async def api_search_hybrid(body: HybridSearchIn, request: Request):
         "summary_error": summary_error,
         "tokens_usage": tokens_usage,
     }
+
+
+class BridgeSendIn(BaseModel):
+    prompt: str
+    chat_id: int = 425826
+    user_id: int = 56
+    user_name: str = "dashpm-user"
+    tab_num: str = "dashpm"
+    selected_tools: list[str] = Field(default_factory=list)
+    context_size: str = "30"
+    agent_model: str = "universal"
+
+
+class BridgePollIn(BaseModel):
+    request_id: str
+
+
+@app.post("/api/bridge/catchpm/send")
+async def api_bridge_catchpm_send(body: BridgeSendIn):
+    text = (body.prompt or "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "empty prompt"}, status_code=400)
+
+    prod = await _bridge_get_producer()
+    req_id = uuid.uuid4().hex
+
+    payload = {
+        "user_id": int(body.user_id),
+        "chat_id": int(body.chat_id),
+        "message": text,
+        "is_from_bot": False,
+        "type_agent": "pm",
+        "request_id": req_id,
+        "tb_name": body.tab_num,
+        "username": body.user_name,
+        "selected_tools": body.selected_tools,
+        "context_size": body.context_size,
+        "agent_model": body.agent_model,
+        "source_platform": "dashpm",
+    }
+
+    await prod.send_and_wait(CATCHPM_CHAT_TOPIC, payload)
+
+    chat_id = int(body.chat_id)
+    cursor = len(_bridge_inbox.get(chat_id, []))
+    _bridge_requests[req_id] = {"chat_id": chat_id, "cursor": cursor, "created_at": time.time()}
+
+    return {"ok": True, "request_id": req_id, "chat_id": chat_id}
+
+
+@app.post("/api/bridge/catchpm/poll")
+async def api_bridge_catchpm_poll(body: BridgePollIn):
+    req_id = (body.request_id or "").strip()
+    st = _bridge_requests.get(req_id)
+    if not st:
+        return {"ok": False, "error": "request_not_found"}
+
+    chat_id = int(st["chat_id"])
+    cursor = int(st.get("cursor", 0))
+    inbox = _bridge_inbox.get(chat_id, [])
+
+    if len(inbox) <= cursor:
+        return {"ok": True, "ready": False}
+
+    msg = inbox[cursor]
+    st["cursor"] = cursor + 1
+    return {"ok": True, "ready": True, "message": msg}
+
 
 
 class KgSearchIn(BaseModel):

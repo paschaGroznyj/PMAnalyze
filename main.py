@@ -2261,6 +2261,31 @@ async def run_parser(body: RunParserReq | None = None, background: BackgroundTas
 @app.get("/api/run/parser/progress")
 async def run_parser_progress():
     p = await pipeline.get_parser_progress()
+
+    last_run = None
+    if not bool(p.get("running")):
+        async with pool.acquire() as con:
+            row = await con.fetchrow(
+                """
+                SELECT id, status, fetched, inserted, relevant, reviewed, errors, started_at, finished_at
+                FROM process_mining.parser_runs
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            )
+        if row:
+            last_run = {
+                "id": int(row["id"]),
+                "status": row["status"],
+                "fetched": int(row["fetched"] or 0),
+                "inserted": int(row["inserted"] or 0),
+                "relevant": int(row["relevant"] or 0),
+                "reviewed": int(row["reviewed"] or 0),
+                "errors": int(row["errors"] or 0),
+                "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
+            }
+
     return {
         "ok": True,
         "running": bool(p.get("running")),
@@ -2276,6 +2301,7 @@ async def run_parser_progress():
         "errors": p.get("errors") or {},
         "started_at": p.get("started_at"),
         "updated_at": p.get("updated_at"),
+        "last_run": last_run,
     }
 
 

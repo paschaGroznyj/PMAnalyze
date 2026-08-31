@@ -1556,6 +1556,16 @@ function renderParserProgress(d){
     el.textContent = `парсер: завершен · ${done}/${total} · найдено ${fin} (raw ${raw})`;
     return;
   }
+
+  const lr = d.last_run || null;
+  if(lr && lr.status === "done"){
+    const fetched = Number(lr.fetched||0);
+    const inserted = Number(lr.inserted||0);
+    const relevant = Number(lr.relevant||0);
+    el.textContent = `парсер: последний запуск · найдено ${fetched} · новых ${inserted} · релевантных ${relevant}`;
+    return;
+  }
+
   el.textContent = "парсер: idle";
 }
 

@@ -667,12 +667,13 @@
   .pkb-kg-danger svg{width:17px; height:17px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
   .pkb-kg-danger-all{padding:0; width:34px; min-width:34px; font-size:11px; letter-spacing:.04em; font-family:'Space Mono',monospace}
   /* перебиваем базовый .kg-search-row/.kg-inp-wrap повышенной специфичностью (2 класса) */
-  .pkb-graph-wrap .pkb-kg-search-row, .kg-search-row.pkb-kg-search-row{display:block !important; gap:0}
-  .pkb-graph-wrap .pkb-kg-search-row .pkb-kg-inp-wrap, .kg-inp-wrap.pkb-kg-inp-wrap{position:relative; display:block !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; min-width:0 !important}
+  .pkb-graph-wrap .pkb-kg-search-row, .kg-search-row.pkb-kg-search-row{display:flex; align-items:center; gap:12px; flex-wrap:nowrap}
+  .pkb-graph-wrap .pkb-kg-search-row .pkb-kg-inp-wrap, .kg-inp-wrap.pkb-kg-inp-wrap{position:relative; display:block; flex:1 1 auto; width:auto; max-width:none; min-width:0}
   #pkb-kg-query{width:100%; box-sizing:border-box; border:2px solid var(--ink); background:#fff; color:var(--ink); padding:10px 44px 10px 10px; font-size:14px; outline:none; transition:box-shadow .1s}
   #pkb-kg-query:focus{box-shadow:3px 3px 0 var(--orange)}
-  .pkb-kg-llm{display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap; width:100%; justify-content:flex-start; margin-top:8px}
+  .pkb-kg-llm{display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap; width:auto; justify-content:flex-start; margin-top:0; flex:0 0 auto}
   .pkb-kg-depth-row{display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap}
+  .pkb-kg-depth-row .kg-chunks{margin-left:4px}
   .pkb-kg-depth-row .kg-depth-range{flex:0 0 auto; width:190px}
   .pkb-kg-hint{font-size:11px; color:var(--ink); opacity:.55; line-height:1.45}
   .pkb-kg-summary{background:#fff; padding:9px 12px; font-size:14px; color:#4a443c; line-height:1.5; border:2px solid var(--ink)}
@@ -710,21 +711,30 @@
   }
   @media(max-width:920px){
     .pkb-kg-head{align-items:stretch; text-align:left}
-    .pkb-kg-info{display:flex; text-align:left; justify-content:space-between}
+    .pkb-kg-info{display:flex; text-align:left; justify-content:space-between; flex-wrap:wrap; gap:10px}
+    .pkb-kg-tools{margin-left:auto}
     .pkb-kg-canvas{height:380px}
-    .pkb-kg-search-row{gap:8px; align-items:stretch}
+    .pkb-kg-search-row{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
     .pkb-kg-inp-wrap{flex:1 1 100%; width:100%}
-    .pkb-kg-llm{width:100%}
+    .pkb-kg-llm{width:100%; margin-top:2px}
+    .pkb-kg-depth-row{gap:8px}
+    .pkb-kg-depth-row .kg-chunks{width:100%; margin-left:0}
   }
   @media(max-width:500px){
     .pkb-kg-head{padding:10px; align-items:stretch; text-align:left}
+    .pkb-kg-info{gap:8px}
+    .pkb-kg-tools{width:100%; justify-content:flex-start}
     .pkb-kg-canvas{height:340px; box-shadow:3px 3px 0 var(--ink)}
-    .pkb-kg-search-row{flex-direction:column; align-items:stretch}
-    .pkb-kg-inp-wrap{flex:1 1 100%; width:100%}
-    .pkb-kg-llm{justify-content:flex-start; width:100%}
+    .pkb-kg-search-row{display:block}
+    .pkb-kg-inp-wrap{width:100%}
+    .pkb-kg-llm{display:inline-flex; width:100%; margin-top:8px}
     .kg-search-go, #pkb-kg-search-go{width:40px; height:40px}
-    #pkb-kg-refresh{width:40px; height:40px; min-height:40px; padding:0}
-    .pkb-kg-depth-row .kg-depth-range{min-height:24px}
+    #pkb-kg-refresh, #pkb-kg-delete-all, #btn-kg-export{width:40px; height:40px; min-height:40px; padding:0}
+    .pkb-kg-depth-row{display:grid; grid-template-columns:auto 190px auto; align-items:center; column-gap:8px; row-gap:8px}
+    .pkb-kg-depth-row .kg-depth-label{grid-column:1 / -1}
+    #pkb-kg-depth{grid-column:2; justify-self:start}
+    .pkb-kg-depth-row .kg-depth-badge{grid-column:3; min-width:20px}
+    .pkb-kg-depth-row .kg-chunks{grid-column:1 / -1; margin-left:0}
     .pkb-card-modal-box{width:96vw; max-height:92vh}
     .pkb-kg-card{max-height:92vh; padding:14px 12px 56px}
     .pkb-kg-card .pkb-kg-neigh button{min-height:36px; padding:8px 10px}

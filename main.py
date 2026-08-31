@@ -20,6 +20,7 @@ import hashlib
 import secrets
 import re
 from pathlib import Path
+from dotenv import load_dotenv
 from urllib.parse import urlparse, parse_qs
 
 from fastapi import FastAPI, BackgroundTasks, Request, Response, HTTPException
@@ -36,6 +37,9 @@ from app.kg_runtime import KGRunManager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+
+# Подгружаем .env при старте процесса (в т.ч. SMTP_* для дайджеста)
+load_dotenv(Path("/app/.env"))
 
 DB_DSN = os.getenv("PMANALYZE_DSN", "postgresql://catchpm:catchpm2026@catchpm-postgres:5432/catchpm_chat")
 

@@ -294,10 +294,16 @@
     padding:18px 20px; display:flex; flex-direction:row; align-items:stretch; gap:18px;
     align-self:start;
   }
-  /* левый блок — сама погода, тут живёт абсолютный SVG */
-  .wx-main{position:relative; overflow:hidden;
+  /* левый блок — сама погода, тут живёт абсолютный SVG.
+     min-height убран: раньше блок был выше текста, и иконка top:44% вставала
+     по центру растянутого блока — ВЫШЕ текста. Теперь высота = высота текста,
+     значит центр блока == центр текста, и иконка садится ровно на уровень текста. */
+  .wx-main{position:relative; overflow:visible;
     min-width:200px; min-height:128px;
     display:flex; flex-direction:column; justify-content:center; gap:4px; flex:none}
+  /* обёртка текста + иконки: высота = высота текста, иконка абсолютом внутри неё,
+     поэтому top:50% совпадает с центром текста при любой высоте .wx-main */
+  .wx-text{position:relative; display:flex; flex-direction:column; gap:4px; padding-right:140px}
   .wx-city{font-family:'Space Mono',monospace; font-size:11px;
     letter-spacing:.12em; text-transform:uppercase; color:var(--orange); z-index:2}
   .wx-time{font-family:'Fraunces',serif; font-weight:900;
@@ -307,48 +313,37 @@
   .wx-sub{font-family:'Space Mono',monospace; font-size:11px;
     letter-spacing:.06em; color:#5a5348; z-index:2; margin-top:4px}
   /* SVG-статус погоды фоном блока */
-  .wx-sky{position:absolute; right:-10px; top:44%; transform:translateY(-50%);
-    width:132px; height:132px; opacity:.24; z-index:1; pointer-events:none}
-  .wx-sky{display:flex; align-items:center; justify-content:center}
+  .wx-sky{position:absolute; right:-10px; top:50%; transform:translateY(-50%);
+    width:132px; height:132px; opacity:.24; z-index:1; pointer-events:none;
+    display:flex; align-items:center; justify-content:center}
   .wx-sky svg{width:100%; height:100%; display:block}
-  .wx-main > div{position:relative; z-index:2}
+  .wx-text > div:not(.wx-sky){position:relative; z-index:2}
 
   @media(max-width:920px){
     /* планшет: health переезжает под погоду */
     .wx-widget{flex-direction:column; align-items:stretch; gap:10px}
   }
   @media(max-width:500px){
-    .wx-widget{width:100%; margin-top:12px; padding:16px 18px; gap:12px}
-    /* мобилка: восстанавливаем padding-right и выставляем width:100% для блока.
-       иконка абсолютом справа */
-    /* НЕ растягиваем блок на всю колонку: align-self:start + компактная высота,
-       тогда центр блока = центр текста, и абсолютная иконка top:50% встаёт
-       ровно по центру текста, а не улетает вверх */
+    /* align-items:center — чтобы .wx-main не растягивался по высоте колонки,
+       иначе абсолютная иконка top:50% центрируется по растянутому блоку и
+       уезжает вверх над текстом */
+    .wx-widget{width:100%; margin-top:12px; padding:16px 18px; gap:12px;
+      flex-direction:column; align-items:stretch}
+    /* мобилка: блок на всю ширину. Иконка теперь абсолютом внутри .wx-text
+       (высота = высота текста), поэтому top:50% = центр текста автоматически,
+       без костылей с align-self/min-height/растяжением. */
     .wx-main{
       min-width:0; min-height:0; overflow:visible;
-      padding:8px 92px 8px 0; align-self:start;
-      display:flex; flex-direction:column; justify-content:center; gap:4px;
+      padding:0; align-self:stretch;
     }
-    .wx-main > div{position:relative; z-index:2}
+    .wx-text{padding-right:92px}
     .wx-city{font-size:11px}
     .wx-time{font-size:38px}
     .wx-temp{font-size:32px}
     /* вторичный текст крупнее и контрастнее, чтобы читался на телефоне */
     .wx-sub{font-size:12px; color:#5a5348}
-    /* ПРИЧИНА бага "иконка сверху": .wx-main на мобилке растянут во всю высоту
-       столбца, но текст (city/time/temp/sub) из-за justify-content:center сидит
-       по центру, а не заполняет блок. Абсолютная иконка с top:50% центрировалась
-       по ВСЕМУ .wx-main и вставала ВЫШЕ текста. Поэтому здесь принудительно
-       переопределяем: justify-content:center у .wx-main оставляем, а иконку
-       ставим ровно по центру видимого текстового кластера. Так как текст
-       центрирован, его геом.центр совпадает с центром блока — значит иконке
-       нужен именно центр блока БЕЗ смещения вверх. Ставим top:50% с реальным
-       центрированием flex-контейнера иконки. */
     .wx-sky{
-      position:absolute; right:6px; top:50%; bottom:auto;
-      transform:translateY(-50%);
-      width:84px; height:84px; opacity:.24; z-index:1; pointer-events:none;
-      display:flex; align-items:center; justify-content:center;
+      right:6px; width:84px; height:84px;
     }
   }
 
@@ -919,14 +914,16 @@
     </div>
     <div class="wx-widget" id="wx-widget">
       <div class="wx-main">
-        <div class="wx-sky" id="wx-sky"></div>
-        <div>
-          <div class="wx-city" id="wx-city">—</div>
-          <div class="wx-time" id="wx-time">--:--</div>
-        </div>
-        <div>
-          <div class="wx-temp" id="wx-temp">—</div>
-          <div class="wx-sub" id="wx-sub">загрузка…</div>
+        <div class="wx-text">
+          <div class="wx-sky" id="wx-sky"></div>
+          <div>
+            <div class="wx-city" id="wx-city">—</div>
+            <div class="wx-time" id="wx-time">--:--</div>
+          </div>
+          <div>
+            <div class="wx-temp" id="wx-temp">—</div>
+            <div class="wx-sub" id="wx-sub">загрузка…</div>
+          </div>
         </div>
       </div>
       <div class="mh-widget" id="mh-widget">

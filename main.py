@@ -2267,6 +2267,7 @@ async def run_parser_progress():
         "total_sources": int(p.get("total_sources") or 0),
         "done_sources": int(p.get("done_sources") or 0),
         "current_source": p.get("current_source") or "",
+        "active_sources": p.get("active_sources") or [],
         "found_raw_total": int(p.get("found_raw_total") or 0),
         "found_final_total": int(p.get("found_final_total") or 0),
         "per_source_raw": p.get("per_source_raw") or {},

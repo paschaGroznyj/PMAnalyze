@@ -99,6 +99,7 @@ class Settings:
     parser_run_url: str = field(default_factory=lambda: os.getenv("PARSER_SERVICE_URL", "http://catchpm-browser:9333/api/parser/run"))
     parser_pdf_url: str = field(default_factory=lambda: os.getenv("PARSER_PDF_URL", "http://catchpm-browser:9333/api/pdf/fulltext"))
     parser_timeout: int = int(os.getenv("PARSER_SERVICE_TIMEOUT_SECONDS", "180"))
+    parser_sources_concurrency: int = int(os.getenv("PARSER_SOURCES_CONCURRENCY", "3"))
     parser_api_key: str = field(default_factory=lambda: os.getenv("PARSER_SERVICE_API_KEY", "").strip())
 
 
@@ -118,6 +119,7 @@ class PMAnalyzePipeline:
             "total_sources": 0,
             "done_sources": 0,
             "current_source": "",
+            "active_sources": [],
             "found_raw_total": 0,
             "found_final_total": 0,
             "per_source_raw": {},
@@ -816,62 +818,74 @@ class PMAnalyzePipeline:
             source_list = default_sources
 
         await self._parser_progress_start(source_list)
-        out: list[dict] = []
         try:
+            max_c = int(self.settings.parser_sources_concurrency or 1)
+            max_c = max(1, min(max_c, len(source_list)))
+            sem = asyncio.Semaphore(max_c)
+
             async with httpx.AsyncClient(timeout=self.settings.parser_timeout) as client:
-                for src in source_list:
-                    await self._parser_progress_source_start(src)
-                    payload = {
-                        "max_per_source": int(self.settings.max_per_source),
-                        "ui_lang": "en",
-                        "include_sources": [src],
-                    }
-                    try:
-                        r = await client.post(self.settings.parser_run_url, headers=headers, json=payload)
-                        r.raise_for_status()
-                        data = r.json()
-                        if not data.get("ok"):
-                            err = data.get("error") or data.get("errors") or "unknown"
-                            await self._parser_progress_source_done(src, 0, 0, 0, str(err))
-                            print(f"[pmanalyze] collect parser_not_ok source={src} url={self.settings.parser_run_url} error={err}")
-                            continue
-
-                        arts = data.get("articles", []) or []
-                        src_raw = (data.get("sources_raw") or data.get("sources") or {})
-                        src_fin = (data.get("sources") or {})
-                        src_drop = (data.get("dropped_old_by_source") or {})
-                        raw_cnt = int(src_raw.get(src, len(arts)) or 0)
-                        fin_cnt = int(src_fin.get(src, len(arts)) or 0)
-                        drop_cnt = int(src_drop.get(src, 0) or 0)
-                        errs = data.get("errors") or {}
-                        src_err = errs.get(src, "") if isinstance(errs, dict) else ""
-
-                        await self._parser_progress_source_done(src, raw_cnt, fin_cnt, drop_cnt, str(src_err or ""))
-                        out.extend(arts)
-                        print(f"[pmanalyze] collect source={src} raw={raw_cnt} final={fin_cnt} dropped_old={drop_cnt}")
-
-                    except httpx.HTTPStatusError as e:
-                        status = e.response.status_code if e.response is not None else "n/a"
-                        req_url = str(e.request.url) if e.request is not None else self.settings.parser_run_url
-                        body = ""
+                async def _run_source(src: str) -> list[dict]:
+                    async with sem:
+                        await self._parser_progress_source_start(src)
+                        payload = {
+                            "max_per_source": int(self.settings.max_per_source),
+                            "ui_lang": "en",
+                            "include_sources": [src],
+                        }
                         try:
-                            if e.response is not None:
-                                body = (e.response.text or "")[:700]
-                        except Exception:
-                            body = "<response_text_unavailable>"
-                        await self._parser_progress_source_done(src, 0, 0, 0, f"http_{status}")
-                        print(
-                            f"[pmanalyze] collect http_error type={type(e).__name__} status={status} "
-                            f"url={req_url} source={src} payload={payload} body={body}"
-                        )
-                    except Exception as e:
-                        await self._parser_progress_source_done(src, 0, 0, 0, repr(e))
-                        print(
-                            f"[pmanalyze] collect error type={type(e).__name__} repr={repr(e)} "
-                            f"url={self.settings.parser_run_url} source={src} payload={payload}"
-                        )
+                            r = await client.post(self.settings.parser_run_url, headers=headers, json=payload)
+                            r.raise_for_status()
+                            data = r.json()
+                            if not data.get("ok"):
+                                err = data.get("error") or data.get("errors") or "unknown"
+                                await self._parser_progress_source_done(src, 0, 0, 0, str(err))
+                                print(f"[pmanalyze] collect parser_not_ok source={src} url={self.settings.parser_run_url} error={err}")
+                                return []
 
-            return out
+                            arts = data.get("articles", []) or []
+                            src_raw = (data.get("sources_raw") or data.get("sources") or {})
+                            src_fin = (data.get("sources") or {})
+                            src_drop = (data.get("dropped_old_by_source") or {})
+                            raw_cnt = int(src_raw.get(src, len(arts)) or 0)
+                            fin_cnt = int(src_fin.get(src, len(arts)) or 0)
+                            drop_cnt = int(src_drop.get(src, 0) or 0)
+                            errs = data.get("errors") or {}
+                            src_err = errs.get(src, "") if isinstance(errs, dict) else ""
+
+                            await self._parser_progress_source_done(src, raw_cnt, fin_cnt, drop_cnt, str(src_err or ""))
+                            print(f"[pmanalyze] collect source={src} raw={raw_cnt} final={fin_cnt} dropped_old={drop_cnt}")
+                            return arts
+
+                        except httpx.HTTPStatusError as e:
+                            status = e.response.status_code if e.response is not None else "n/a"
+                            req_url = str(e.request.url) if e.request is not None else self.settings.parser_run_url
+                            body = ""
+                            try:
+                                if e.response is not None:
+                                    body = (e.response.text or "")[:700]
+                            except Exception:
+                                body = "<response_text_unavailable>"
+                            await self._parser_progress_source_done(src, 0, 0, 0, f"http_{status}")
+                            print(
+                                f"[pmanalyze] collect http_error type={type(e).__name__} status={status} "
+                                f"url={req_url} source={src} payload={payload} body={body}"
+                            )
+                            return []
+                        except Exception as e:
+                            await self._parser_progress_source_done(src, 0, 0, 0, repr(e))
+                            print(
+                                f"[pmanalyze] collect error type={type(e).__name__} repr={repr(e)} "
+                                f"url={self.settings.parser_run_url} source={src} payload={payload}"
+                            )
+                            return []
+
+                tasks = [asyncio.create_task(_run_source(src)) for src in source_list]
+                results = await asyncio.gather(*tasks)
+                out: list[dict] = []
+                for arts in results:
+                    if arts:
+                        out.extend(arts)
+                return out
         finally:
             await self._parser_progress_finish()
 
@@ -1377,6 +1391,15 @@ class PMAnalyzePipeline:
         async with self._parser_state_lock:
             self._parser_running = False
 
+    @staticmethod
+    def _format_active_sources(active: list[str]) -> str:
+        src = [str(s).strip().lower() for s in (active or []) if str(s).strip()]
+        if not src:
+            return ""
+        if len(src) <= 2:
+            return ", ".join(src)
+        return ", ".join(src[:2]) + f" (+{len(src)-2})"
+
     async def _parser_progress_start(self, sources: list[str]):
         now = datetime.now(timezone.utc).isoformat()
         src = [str(s).strip().lower() for s in (sources or []) if str(s).strip()]
@@ -1386,6 +1409,7 @@ class PMAnalyzePipeline:
                 "total_sources": len(src),
                 "done_sources": 0,
                 "current_source": "",
+                "active_sources": [],
                 "found_raw_total": 0,
                 "found_final_total": 0,
                 "per_source_raw": {s: 0 for s in src},
@@ -1400,7 +1424,11 @@ class PMAnalyzePipeline:
         now = datetime.now(timezone.utc).isoformat()
         s = (source or "").strip().lower()
         async with self._parser_progress_lock:
-            self._parser_progress["current_source"] = s
+            active = list(self._parser_progress.get("active_sources") or [])
+            if s and s not in active:
+                active.append(s)
+            self._parser_progress["active_sources"] = active
+            self._parser_progress["current_source"] = self._format_active_sources(active)
             self._parser_progress["updated_at"] = now
 
     async def _parser_progress_source_done(self, source: str, raw_cnt: int, final_cnt: int, dropped_old: int = 0, err: str = ""):
@@ -1411,6 +1439,7 @@ class PMAnalyzePipeline:
             psf = dict(self._parser_progress.get("per_source_final") or {})
             pso = dict(self._parser_progress.get("dropped_old_by_source") or {})
             errs = dict(self._parser_progress.get("errors") or {})
+            active = [x for x in list(self._parser_progress.get("active_sources") or []) if x != s]
             psr[s] = int(raw_cnt or 0)
             psf[s] = int(final_cnt or 0)
             pso[s] = int(dropped_old or 0)
@@ -1420,10 +1449,11 @@ class PMAnalyzePipeline:
             self._parser_progress["per_source_final"] = psf
             self._parser_progress["dropped_old_by_source"] = pso
             self._parser_progress["errors"] = errs
+            self._parser_progress["active_sources"] = active
             self._parser_progress["done_sources"] = int(self._parser_progress.get("done_sources", 0)) + 1
             self._parser_progress["found_raw_total"] = int(self._parser_progress.get("found_raw_total", 0)) + int(raw_cnt or 0)
             self._parser_progress["found_final_total"] = int(self._parser_progress.get("found_final_total", 0)) + int(final_cnt or 0)
-            self._parser_progress["current_source"] = ""
+            self._parser_progress["current_source"] = self._format_active_sources(active)
             self._parser_progress["updated_at"] = now
 
     async def _parser_progress_finish(self):
@@ -1431,6 +1461,7 @@ class PMAnalyzePipeline:
         async with self._parser_progress_lock:
             self._parser_progress["running"] = False
             self._parser_progress["current_source"] = ""
+            self._parser_progress["active_sources"] = []
             self._parser_progress["updated_at"] = now
 
     async def get_parser_progress(self) -> dict:

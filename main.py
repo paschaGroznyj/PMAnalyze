@@ -88,6 +88,22 @@ CATCHPM_CHAT_TOPIC = os.getenv("CATCHPM_CHAT_TOPIC", "chat-messages")
 CATCHPM_TASK_EVENTS_TOPIC = os.getenv("CATCHPM_TASK_EVENTS_TOPIC", "task-events")
 CATCHPM_BRIDGE_ENABLED = os.getenv("CATCHPM_BRIDGE_ENABLED", "1").lower() in ("1", "true", "yes", "on")
 
+# Hermes HTTP bridge (OpenAI-compatible)
+HERMES_BASE_URL = os.getenv("HERMES_BASE_URL", "http://sandbox_dind:18020")
+HERMES_MODEL = os.getenv("HERMES_MODEL", "hermes-agent")
+HERMES_API_KEY = os.getenv("HERMES_API_KEY") or os.getenv("API_SERVER_KEY", "")
+
+# Политика чатов: один пользователь — один чат — один агент.
+# chat_id детерминированно вычисляется из (ip + username + agent), не задаётся с фронта.
+AGENT_BRIDGE_CHAT_SALT = os.getenv("AGENT_BRIDGE_CHAT_SALT", "dashpm-agent-chat-salt")
+
+
+def _agent_chat_id(ip: str, username: str, agent: str) -> int:
+    base = f"{(ip or 'local').strip()}::{(username or '').strip().lower()}::{(agent or '').strip().lower()}"
+    digest = hashlib.sha256((AGENT_BRIDGE_CHAT_SALT + "::" + base).encode("utf-8")).hexdigest()
+    # bigint-safe положительный идентификатор в диапазоне 1..2*10^9
+    return (int(digest[:15], 16) % 2_000_000_000) + 1
+
 pipeline: PMAnalyzePipeline | None = None
 pool: asyncpg.Pool | None = None
 mailer: EmailSender | None = None
@@ -3099,54 +3115,222 @@ async def api_search_hybrid(body: HybridSearchIn, request: Request):
     }
 
 
+# Белый список инструментов, разрешённых для bridge-запросов из DashPM.
+# Всё, что не входит в этот набор, отбрасывается на бэке (см. api_bridge_catchpm_send).
+BRIDGE_ALLOWED_TOOLS = {
+    "search_internet",
+    "parsing_page",
+    "parsing_pages",
+}
+# Разрешённые модели агента для bridge. По умолчанию — coder.
+BRIDGE_ALLOWED_MODELS = {"coder"}
+BRIDGE_DEFAULT_MODEL = "coder"
+
+
 class BridgeSendIn(BaseModel):
     prompt: str
+    agent: str = "catchpm"
     chat_id: int = 425826
     user_id: int = 56
     user_name: str = "dashpm-user"
     tab_num: str = "dashpm"
     selected_tools: list[str] = Field(default_factory=list)
     context_size: str = "30"
-    agent_model: str = "universal"
+    agent_model: str = BRIDGE_DEFAULT_MODEL
 
 
 class BridgePollIn(BaseModel):
     request_id: str
 
 
-@app.post("/api/bridge/catchpm/send")
-async def api_bridge_catchpm_send(body: BridgeSendIn):
+class AgentSendIn(BaseModel):
+    prompt: str
+    agent: str = "catchpm"  # catchpm | hermes
+    user_id: int = 56
+    user_name: str = "dashpm-user"
+    tab_num: str = "dashpm"
+    selected_tools: list[str] = Field(default_factory=list)
+    context_size: str = "30"
+    agent_model: str = BRIDGE_DEFAULT_MODEL
+    secret_code: str = ""
+
+
+class AgentPollIn(BaseModel):
+    request_id: str
+
+
+class AgentGateVerifyIn(BaseModel):
+    secret_code: str = Field(min_length=1, max_length=128)
+
+
+# Секретный ключ доступа к bridge-панели. Генерирует ТОЛЬКО админ и кладёт в env.
+# Пользователь лишь вводит его в модалке. Сверка — прямым сравнением с env (constant-time).
+AGENT_BRIDGE_GATE_KEY = (os.getenv("AGENT_BRIDGE_GATE_KEY") or "").strip()
+
+
+def _agent_gate_is_valid(secret_code: str) -> bool:
+    code = (secret_code or "").strip()
+    if not code or not AGENT_BRIDGE_GATE_KEY:
+        return False
+    # compare bytes to avoid TypeError on non-ASCII strings
+    return secrets.compare_digest(code.encode("utf-8"), AGENT_BRIDGE_GATE_KEY.encode("utf-8"))
+
+
+def _normalize_bridge_user_name(raw: str) -> str | None:
+    user_name = (raw or "").strip()
+    if not user_name or user_name == "dashpm-user":
+        return None
+    return user_name[:64]
+
+
+def _normalize_bridge_model(raw: str) -> str:
+    return raw if raw in BRIDGE_ALLOWED_MODELS else BRIDGE_DEFAULT_MODEL
+
+
+def _filter_bridge_tools(tools: list[str] | None) -> list[str]:
+    return [t for t in (tools or []) if t in BRIDGE_ALLOWED_TOOLS]
+
+
+async def _send_to_catchpm_bridge(*, prompt: str, chat_id: int, user_id: int, user_name: str, tab_num: str, selected_tools: list[str], context_size: str, agent_model: str):
     if not _HAS_AIOKAFKA:
-        return JSONResponse({"ok": False, "error": "aiokafka_not_installed"}, status_code=503)
-    text = (body.prompt or "").strip()
+        return {"ok": False, "error": "aiokafka_not_installed", "status": 503}
+
+    text = (prompt or "").strip()
     if not text:
-        return JSONResponse({"ok": False, "error": "empty prompt"}, status_code=400)
+        return {"ok": False, "error": "empty prompt", "status": 400}
+
+    if chat_id < 1 or chat_id > 9223372036854775807:
+        return {"ok": False, "error": "chat_id_out_of_range", "status": 400}
 
     prod = await _bridge_get_producer()
     req_id = uuid.uuid4().hex
 
     payload = {
-        "user_id": int(body.user_id),
-        "chat_id": int(body.chat_id),
+        "user_id": int(user_id),
+        "chat_id": int(chat_id),
         "message": text,
         "is_from_bot": False,
         "type_agent": "pm",
         "request_id": req_id,
-        "tb_name": body.tab_num,
-        "username": body.user_name,
-        "selected_tools": body.selected_tools,
-        "context_size": body.context_size,
-        "agent_model": body.agent_model,
+        "tb_name": tab_num,
+        "username": user_name,
+        "selected_tools": selected_tools,
+        "context_size": context_size,
+        "agent_model": agent_model,
         "source_platform": "dashpm",
     }
 
     await prod.send_and_wait(CATCHPM_CHAT_TOPIC, payload)
 
-    chat_id = int(body.chat_id)
     cursor = len(_bridge_inbox.get(chat_id, []))
-    _bridge_requests[req_id] = {"chat_id": chat_id, "cursor": cursor, "created_at": time.time()}
-
+    _bridge_requests[req_id] = {
+        "agent": "catchpm",
+        "chat_id": chat_id,
+        "cursor": cursor,
+        "created_at": time.time(),
+    }
     return {"ok": True, "request_id": req_id, "chat_id": chat_id}
+
+
+async def _poll_bridge_request(req_id: str):
+    st = _bridge_requests.get(req_id)
+    if not st:
+        return {"ok": False, "error": "request_not_found"}
+
+    if st.get("agent") == "hermes":
+        if st.get("delivered"):
+            return {"ok": True, "ready": False}
+        st["delivered"] = True
+        return {"ok": True, "ready": True, "message": st.get("message")}
+
+    chat_id = int(st["chat_id"])
+    cursor = int(st.get("cursor", 0))
+    inbox = _bridge_inbox.get(chat_id, [])
+    if len(inbox) <= cursor:
+        return {"ok": True, "ready": False}
+
+    msg = inbox[cursor]
+    st["cursor"] = cursor + 1
+    return {"ok": True, "ready": True, "message": msg}
+
+
+async def _call_hermes_agent(*, prompt: str, user_name: str, user_id: int, chat_id: int, tab_num: str):
+    text = (prompt or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty prompt", "status": 400}
+
+    url = f"{HERMES_BASE_URL.rstrip('/')}/v1/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if HERMES_API_KEY:
+        headers["Authorization"] = f"Bearer {HERMES_API_KEY}"
+
+    payload = {
+        "model": HERMES_MODEL,
+        "messages": [
+            {"role": "system", "content": f"platform=dashpm; tab={tab_num}; user={user_name}; user_id={user_id}; chat_id={chat_id}"},
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 800,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code != 200:
+            return {"ok": False, "error": f"hermes_http_{resp.status_code}", "status": 502}
+        data = resp.json()
+    except Exception as e:
+        return {"ok": False, "error": f"hermes_call_failed: {type(e).__name__}: {e}", "status": 502}
+
+    content = ""
+    try:
+        content = (((data or {}).get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    except Exception:
+        content = ""
+    content = str(content or "").strip() or "пустой ответ"
+
+    req_id = uuid.uuid4().hex
+    _bridge_requests[req_id] = {
+        "agent": "hermes",
+        "created_at": time.time(),
+        "delivered": False,
+        "message": {
+            "message": content,
+            "action": "hermes_chat_completion",
+            "agent_model": HERMES_MODEL,
+            "tokens_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            "ts": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    return {"ok": True, "request_id": req_id, "chat_id": chat_id}
+
+
+@app.post("/api/bridge/catchpm/send")
+async def api_bridge_catchpm_send(body: BridgeSendIn):
+    # Backward-compatible endpoint: работает как раньше, но через общий helper.
+    user_name = _normalize_bridge_user_name(body.user_name)
+    if not user_name:
+        return JSONResponse({"ok": False, "error": "username_required"}, status_code=400)
+
+    try:
+        chat_id_val = int(body.chat_id)
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "bad_chat_id"}, status_code=400)
+
+    res = await _send_to_catchpm_bridge(
+        prompt=body.prompt,
+        chat_id=chat_id_val,
+        user_id=int(body.user_id),
+        user_name=user_name,
+        tab_num=body.tab_num,
+        selected_tools=_filter_bridge_tools(body.selected_tools),
+        context_size=body.context_size,
+        agent_model=_normalize_bridge_model(body.agent_model),
+    )
+    if not res.get("ok"):
+        return JSONResponse({"ok": False, "error": res.get("error", "send_failed")}, status_code=int(res.get("status") or 500))
+    return res
 
 
 @app.post("/api/bridge/catchpm/poll")
@@ -3154,20 +3338,66 @@ async def api_bridge_catchpm_poll(body: BridgePollIn):
     if not _HAS_AIOKAFKA:
         return JSONResponse({"ok": False, "error": "aiokafka_not_installed"}, status_code=503)
     req_id = (body.request_id or "").strip()
-    st = _bridge_requests.get(req_id)
-    if not st:
-        return {"ok": False, "error": "request_not_found"}
+    return await _poll_bridge_request(req_id)
 
-    chat_id = int(st["chat_id"])
-    cursor = int(st.get("cursor", 0))
-    inbox = _bridge_inbox.get(chat_id, [])
 
-    if len(inbox) <= cursor:
-        return {"ok": True, "ready": False}
+@app.post("/api/agent/send")
+async def api_agent_send(body: AgentSendIn, request: Request):
+    # Gate: без валидного секретного ключа доступ к bridge закрыт.
+    if not _agent_gate_is_valid(body.secret_code):
+        return JSONResponse({"ok": False, "error": "gate_forbidden"}, status_code=403)
 
-    msg = inbox[cursor]
-    st["cursor"] = cursor + 1
-    return {"ok": True, "ready": True, "message": msg}
+    user_name = _normalize_bridge_user_name(body.user_name)
+    if not user_name:
+        return JSONResponse({"ok": False, "error": "username_required"}, status_code=400)
+
+    agent = (body.agent or "catchpm").strip().lower()
+    if agent not in ("catchpm", "hermes"):
+        return JSONResponse({"ok": False, "error": "bad_agent"}, status_code=400)
+
+    # chat_id детерминированно из (ip + username + agent), не приходит с фронта.
+    ip = _extract_client_ip(request)
+    chat_id = _agent_chat_id(ip, user_name, agent)
+
+    if agent == "catchpm":
+        res = await _send_to_catchpm_bridge(
+            prompt=body.prompt,
+            chat_id=int(chat_id),
+            user_id=int(body.user_id),
+            user_name=user_name,
+            tab_num=body.tab_num,
+            selected_tools=_filter_bridge_tools(body.selected_tools),
+            context_size=body.context_size,
+            agent_model=_normalize_bridge_model(body.agent_model),
+        )
+        if not res.get("ok"):
+            return JSONResponse({"ok": False, "error": res.get("error", "send_failed")}, status_code=int(res.get("status") or 500))
+        return {**res, "agent": "catchpm"}
+
+    # hermes
+    res = await _call_hermes_agent(
+        prompt=body.prompt,
+        user_name=user_name,
+        user_id=int(body.user_id),
+        chat_id=int(chat_id),
+        tab_num=body.tab_num,
+    )
+    if not res.get("ok"):
+        return JSONResponse({"ok": False, "error": res.get("error", "hermes_failed")}, status_code=int(res.get("status") or 500))
+    return {**res, "agent": "hermes"}
+
+
+@app.post("/api/agent/gate/verify")
+async def api_agent_gate_verify(body: AgentGateVerifyIn):
+    if _agent_gate_is_valid(body.secret_code):
+        return {"ok": True, "valid": True}
+    return JSONResponse({"ok": True, "valid": False}, status_code=403)
+
+
+@app.post("/api/agent/poll")
+async def api_agent_poll(body: AgentPollIn):
+    req_id = (body.request_id or "").strip()
+    return await _poll_bridge_request(req_id)
 
 
 

@@ -390,6 +390,76 @@
   .kg-weak-filter{display:flex; align-items:center; gap:6px; font-size:11px; letter-spacing:.04em; color:var(--ink); cursor:pointer; user-select:none; white-space:nowrap}
   .kg-weak-filter input{width:16px; height:16px; accent-color:var(--orange); cursor:pointer}
   .kg-layout-wrap{font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink); opacity:.7}
+
+  /* ==== CatchPM bridge form ==== */
+  .brg-loading{color:#6b6055; font-size:11px}
+  .brg-form{display:flex; flex-direction:column; gap:14px}
+  .brg-field{display:flex; flex-direction:column; gap:6px}
+  .brg-label{font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.12em;
+    text-transform:uppercase; color:#6b6055}
+  .brg-select{width:100%; box-sizing:border-box; border:2px solid var(--ink); background:#fff;
+    color:var(--ink); border-radius:10px; padding:11px 12px; font-family:'Space Mono',monospace;
+    font-size:14px; line-height:1.4; transition:box-shadow .12s ease, border-color .12s ease}
+  .brg-select:focus{outline:none; box-shadow:3px 3px 0 var(--orange)}
+  .brg-input, .brg-textarea{width:100%; box-sizing:border-box; border:2px solid var(--ink);
+    background:#fff; color:var(--ink); border-radius:10px; padding:11px 12px;
+    font-family:'Space Mono',monospace; font-size:14px; line-height:1.4;
+    transition:box-shadow .12s ease, border-color .12s ease}
+  .brg-input:focus, .brg-textarea:focus{outline:none; box-shadow:3px 3px 0 var(--orange)}
+  .brg-input::placeholder, .brg-textarea::placeholder{color:#b3a892}
+  .brg-input:disabled, .brg-textarea:disabled{background:#f3ece0; opacity:.7; cursor:not-allowed}
+  .brg-textarea{min-height:84px; resize:vertical}
+  .brg-row{display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end}
+  .brg-row .brg-field{flex:1; min-width:140px}
+  .brg-hint{font-size:11px; color:#8a7f70; letter-spacing:.04em}
+  .brg-actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .brg-send{display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    border:2px solid var(--ink); background:var(--orange); color:#fff; border-radius:10px;
+    padding:11px 18px; font-family:'Space Mono',monospace; font-size:12px; letter-spacing:.12em;
+    text-transform:uppercase; cursor:pointer; transition:transform .1s ease, box-shadow .12s ease}
+  .brg-send:hover:not(:disabled){transform:translate(-2px,-2px); box-shadow:4px 4px 0 var(--ink)}
+  .brg-send:active:not(:disabled){transform:translate(0,0); box-shadow:none}
+  .brg-send:disabled{opacity:.5; cursor:wait}
+  .brg-status{font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.1em;
+    text-transform:uppercase; color:#6b6055}
+  .brg-status.err{color:#d94714}
+  .brg-status.ok{color:#2f8f4e}
+  .brg-model{font-family:'Space Mono',monospace; font-size:12px; color:var(--ink);
+    background:#f3ece0; border:2px dashed var(--ink); border-radius:10px; padding:6px 10px;
+    letter-spacing:.06em}
+  .brg-tools{display:flex; gap:14px; flex-wrap:wrap}
+  .brg-tool{display:inline-flex; align-items:center; gap:7px; font-family:'Space Mono',monospace;
+    font-size:12px; color:var(--ink); cursor:pointer}
+  .brg-tool input{width:16px; height:16px; accent-color:var(--orange); cursor:pointer}
+  .brg-gate{display:flex; flex-direction:column; align-items:flex-start; gap:6px}
+  .brg-cancel{background:#f3ece0; color:var(--ink)}
+  .brg-modal-overlay{position:fixed; inset:0; background:rgba(20,16,10,.55);
+    display:flex; align-items:center; justify-content:center; z-index:9999; padding:16px}
+  .brg-modal{background:var(--paper,#fdf9f0); border:3px solid var(--ink); border-radius:12px;
+    box-shadow:6px 6px 0 var(--orange); padding:20px; width:100%; max-width:420px; box-sizing:border-box}
+  .brg-modal-title{font-family:'Space Mono',monospace; font-size:13px; letter-spacing:.1em;
+    text-transform:uppercase; margin-bottom:12px; color:var(--ink)}
+  @media (max-width:500px){
+    .brg-modal{max-width:100%; padding:16px}
+    .brg-modal .brg-send{width:100%; min-height:44px}
+    .brg-modal .brg-input{font-size:16px; padding:12px}
+  }
+  .brg-reply{border:2px dashed var(--ink); background:#fff; border-radius:10px; padding:12px 14px;
+    font-family:'Space Mono',monospace; font-size:13px; line-height:1.5; color:#4a443c;
+    white-space:pre-wrap; word-break:break-word; margin:0}
+  .brg-reply:empty{display:none}
+  @media (max-width:920px){
+    .brg-row{gap:10px}
+  }
+  @media (max-width:500px){
+    .brg-form{gap:12px}
+    .brg-row{display:block}
+    .brg-row .brg-field{width:100%; min-width:0; margin-bottom:10px}
+    .brg-input, .brg-textarea{font-size:16px; padding:12px 12px}
+    .brg-send{width:100%; min-height:44px; padding:12px 18px}
+    .brg-tool{min-height:36px}
+    .brg-tool input{width:20px; height:20px}
+  }
   .kg-layout-mode{font-family:'Space Mono',monospace; font-size:12px; color:var(--ink); background:#fff;
     border:2px solid var(--ink); border-radius:10px; padding:5px 8px; height:32px; cursor:pointer;
     transition:background .15s ease, transform .1s ease}
@@ -1294,24 +1364,9 @@
 
   <div class="panel" id="bridge-panel">
     <h3>CatchPM bridge</h3>
-    <div class="search-row" style="margin-top:10px">
-      <div class="search-inp-wrap">
-        <input type="text" id="bridge-q" maxlength="1500" autocomplete="off" placeholder="запрос в агент CatchPM">
-        <button class="search-go" id="bridge-send" title="Отправить в CatchPM" aria-label="Отправить в CatchPM">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h14"></path><path d="m12 6 6 6-6 6"></path></svg>
-        </button>
-      </div>
-      <input id="bridge-chat-id" type="number" value="425826" style="width:120px">
-      <input id="bridge-user-id" type="number" value="56" style="width:90px">
-      <select id="bridge-agent-model" class="kg-layout-mode" style="width:160px">
-        <option value="universal">universal (gemini)</option>
-        <option value="coder">coder (gpt)</option>
-        <option value="designer">designer (claude)</option>
-      </select>
+    <div id="bridge-react-root" style="margin-top:10px">
+      <div class="brg-loading mono">загрузка формы…</div>
     </div>
-    <div class="mono" id="bridge-status" style="margin-top:8px;color:#6b6055">bridge idle</div>
-    <div class="search-summary" id="bridge-reply" style="margin-top:8px"></div>
-    <div id="bridge-react-root" style="margin-top:10px"></div>
   </div>
 
 <script>
@@ -2289,53 +2344,6 @@ loadArticles(1);
 setInterval(loadStats, 60000);
 setInterval(loadSearchStats, 60000);
 
-let bridgeReqId = null;
-let bridgePollTimer = null;
-
-async function bridgeSend(){
-  const q = (document.querySelector('#bridge-q')?.value || '').trim();
-  if(!q) return;
-  const chat_id = Number(document.querySelector('#bridge-chat-id')?.value || 425826);
-  const user_id = Number(document.querySelector('#bridge-user-id')?.value || 56);
-  const agent_model = (document.querySelector('#bridge-agent-model')?.value || 'universal');
-  document.querySelector('#bridge-status').textContent = 'отправляю в CatchPM…';
-  const r = await fetch('/api/bridge/catchpm/send', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({prompt:q, chat_id, user_id, user_name:'dashpm-user', tab_num:'dashpm', agent_model, selected_tools:[], context_size:'30'})
-  });
-  const d = await r.json();
-  if(!d.ok){
-    document.querySelector('#bridge-status').textContent = 'ошибка: ' + (d.error || 'send_failed');
-    return;
-  }
-  bridgeReqId = d.request_id;
-  document.querySelector('#bridge-status').textContent = 'запрос отправлен, жду ответ…';
-  if(bridgePollTimer) clearInterval(bridgePollTimer);
-  bridgePollTimer = setInterval(bridgePoll, 1800);
-}
-
-async function bridgePoll(){
-  if(!bridgeReqId) return;
-  const r = await fetch('/api/bridge/catchpm/poll', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({request_id: bridgeReqId})
-  });
-  const d = await r.json();
-  if(!d.ok){
-    document.querySelector('#bridge-status').textContent = 'poll error: ' + (d.error || 'unknown');
-    return;
-  }
-  if(!d.ready) return;
-  const msg = d.message || {};
-  document.querySelector('#bridge-reply').textContent = msg.message || 'пустой ответ';
-  document.querySelector('#bridge-status').textContent = 'ответ получен';
-  clearInterval(bridgePollTimer);
-  bridgePollTimer = null;
-}
-
-document.querySelector('#bridge-send')?.addEventListener('click', bridgeSend);
-document.querySelector('#bridge-q')?.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); bridgeSend(); }});
-
 </script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -2344,49 +2352,191 @@ document.querySelector('#bridge-q')?.addEventListener('keydown', (e)=>{ if(e.key
   const rootEl = document.getElementById('bridge-react-root');
   if(!rootEl || !window.React || !window.ReactDOM) return;
   const e = React.createElement;
-  function App(){
-    const [prompt, setPrompt] = React.useState('React->CatchPM smoke: ответь OK');
-    const [chatId, setChatId] = React.useState(425826);
-    const [userId, setUserId] = React.useState(56);
-    const [agentModel, setAgentModel] = React.useState('universal');
-    const [status, setStatus] = React.useState('idle');
-    const [reply, setReply] = React.useState('');
 
-    async function send(){
-      try{
-        setStatus('sending...');
-        const r = await fetch('/api/bridge/catchpm/send', {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({prompt, chat_id:Number(chatId), user_id:Number(userId), user_name:'dashpm-user', tab_num:'dashpm', agent_model:agentModel, selected_tools:[], context_size:'30'})
-        });
-        const d = await r.json();
-        if(!d.ok){ setStatus('error: '+(d.error||'send_failed')); return; }
-        const req = d.request_id; setStatus('sent, polling...');
-        for(let i=0;i<25;i++){
-          await new Promise(res=>setTimeout(res,1800));
-          const pr = await fetch('/api/bridge/catchpm/poll', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({request_id:req})});
-          const pd = await pr.json();
-          if(pd.ok && pd.ready){ setReply((pd.message&&pd.message.message)||''); setStatus('done'); return; }
-        }
-        setStatus('timeout');
-      }catch(err){ setStatus('error: '+String(err)); }
+  const ALLOWED_TOOLS = [
+    {id:'search_internet', label:'Интернет-поиск'},
+    {id:'parsing_page',    label:'Парсинг страницы'},
+    {id:'parsing_pages',   label:'Парсинг списка ссылок'},
+  ];
+  const FIXED_MODEL = 'coder';
+
+  function App(){
+    const [agent, setAgent]         = React.useState('catchpm');
+    const [userName, setUserName]   = React.useState('');
+    const [prompt, setPrompt]       = React.useState('');
+    const [userId, setUserId]       = React.useState(56);
+    const [tools, setTools]         = React.useState({search_internet:true, parsing_page:false, parsing_pages:false});
+    const [status, setStatus]       = React.useState('idle');
+    const [statusKind, setStatusKind] = React.useState('');
+    const [reply, setReply]         = React.useState('');
+    const [busy, setBusy]           = React.useState(false);
+
+    // Gate: доступ к форме закрыт до ввода валидного секретного ключа.
+    const [unlocked, setUnlocked]   = React.useState(false);
+    const [secretCode, setSecretCode] = React.useState('');
+    const [modalOpen, setModalOpen] = React.useState(false);
+    const [gateBusy, setGateBusy]   = React.useState(false);
+    const [gateErr, setGateErr]     = React.useState('');
+
+    function toggleTool(id){
+      setTools(prev => ({...prev, [id]: !prev[id]}));
     }
 
-    return e('div', {className:'mono', style:{border:'1px dashed #e7d9c8', borderRadius:'10px', padding:'10px'}}, [
-      e('div', {key:'h', style:{fontWeight:'700', marginBottom:'8px'}}, 'React demo: CatchPM bridge'),
-      e('input', {key:'p', value:prompt, onChange:(ev)=>setPrompt(ev.target.value), style:{width:'100%',marginBottom:'8px'}, placeholder:'prompt'}),
-      e('div', {key:'row', style:{display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'8px'}}, [
-        e('input', {key:'c', type:'number', value:chatId, onChange:(ev)=>setChatId(ev.target.value), style:{width:'120px'}}),
-        e('input', {key:'u', type:'number', value:userId, onChange:(ev)=>setUserId(ev.target.value), style:{width:'90px'}}),
-        e('select', {key:'m', value:agentModel, onChange:(ev)=>setAgentModel(ev.target.value), style:{width:'160px'}}, [
-          e('option', {key:'universal', value:'universal'}, 'universal (gemini)'),
-          e('option', {key:'coder', value:'coder'}, 'coder (gpt)'),
-          e('option', {key:'designer', value:'designer'}, 'designer (claude)')
-        ]),
-        e('button', {key:'b', onClick:send}, 'Send')
+    async function verifyGate(){
+      const code = (secretCode||'').trim();
+      if(!code){ setGateErr('введите секретный ключ'); return; }
+      try{
+        setGateBusy(true); setGateErr('');
+        const r = await fetch('/api/agent/gate/verify', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({secret_code:code})
+        });
+        const d = await r.json();
+        if(d && d.valid){
+          setUnlocked(true); setModalOpen(false); setGateBusy(false);
+          return;
+        }
+        setGateErr('неверный ключ'); setGateBusy(false);
+      }catch(err){ setGateErr('ошибка: '+String(err)); setGateBusy(false); }
+    }
+
+    function onModalKey(ev){ if(ev.key==='Enter'){ verifyGate(); } }
+
+    function setStat(text, kind){ setStatus(text); setStatusKind(kind||''); }
+
+    async function send(){
+      const name = (userName||'').trim();
+      if(!name){ setStat('введите имя пользователя', 'err'); return; }
+      const q = (prompt||'').trim();
+      if(!q){ setStat('введите запрос', 'err'); return; }
+
+      const selected_tools = ALLOWED_TOOLS.map(t=>t.id).filter(id => tools[id]);
+
+      try{
+        setBusy(true);
+        setReply('');
+        setStat('отправляю в '+agent+'…', '');
+        const r = await fetch('/api/agent/send', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            prompt:q,
+            agent,
+            user_id:Number(userId),
+            user_name:name,
+            tab_num:'dashpm',
+            agent_model:FIXED_MODEL,
+            selected_tools,
+            context_size:'30',
+            secret_code:(secretCode||'').trim()
+          })
+        });
+        const d = await r.json();
+        if(!d.ok){ setStat('ошибка: '+(d.error||'send_failed'), 'err'); setBusy(false); return; }
+        const req = d.request_id;
+        setStat('запрос отправлен, жду ответ…', '');
+        for(let i=0;i<40;i++){
+          await new Promise(res=>setTimeout(res,1800));
+          const pr = await fetch('/api/agent/poll', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({request_id:req})
+          });
+          const pd = await pr.json();
+          if(!pd.ok){ setStat('poll error: '+(pd.error||'unknown'), 'err'); setBusy(false); return; }
+          if(pd.ready){
+            setReply((pd.message&&pd.message.message)||'пустой ответ');
+            setStat('ответ получен', 'ok');
+            setBusy(false);
+            return;
+          }
+        }
+        setStat('таймаут ожидания ответа', 'err');
+        setBusy(false);
+      }catch(err){ setStat('ошибка: '+String(err), 'err'); setBusy(false); }
+    }
+
+    // Пока не введён ключ — показываем только кнопку доступа (+ модалку).
+    if(!unlocked){
+      return e('div', {className:'brg-gate'}, [
+        e('div', {key:'lead', className:'brg-hint'},
+          'Доступ к панели агентов закрыт. Введите секретный ключ, выданный администратором.'),
+        e('button', {key:'openbtn', className:'brg-send', style:{marginTop:'12px'},
+          onClick:()=>{ setModalOpen(true); setGateErr(''); }}, 'Ввести секретный ключ'),
+        modalOpen ? e('div', {key:'overlay', className:'brg-modal-overlay',
+          onClick:(ev)=>{ if(ev.target===ev.currentTarget) setModalOpen(false); }}, [
+          e('div', {key:'box', className:'brg-modal'}, [
+            e('div', {key:'t', className:'brg-modal-title'}, 'Секретный ключ доступа'),
+            e('input', {key:'i', className:'brg-input', type:'password', maxLength:128,
+              value:secretCode, autoFocus:true, placeholder:'вставьте ключ',
+              onChange:(ev)=>setSecretCode(ev.target.value), onKeyDown:onModalKey}),
+            gateErr ? e('div', {key:'err', className:'brg-status err', style:{marginTop:'8px'}}, gateErr) : null,
+            e('div', {key:'acts', className:'brg-actions', style:{marginTop:'12px'}}, [
+              e('button', {key:'ok', className:'brg-send', onClick:verifyGate, disabled:gateBusy},
+                gateBusy ? 'проверка…' : 'Разблокировать'),
+              e('button', {key:'cancel', className:'brg-send brg-cancel', onClick:()=>setModalOpen(false),
+                disabled:gateBusy}, 'Отмена')
+            ])
+          ])
+        ]) : null
+      ]);
+    }
+
+    return e('div', {className:'brg-form'}, [
+      e('div', {key:'f-agent', className:'brg-field'}, [
+        e('label', {key:'l', className:'brg-label', htmlFor:'brg-agent'}, 'Агент'),
+        e('select', {
+          key:'s', id:'brg-agent', className:'brg-select', value:agent, disabled:busy,
+          onChange:(ev)=>setAgent(ev.target.value)
+        }, [
+          e('option', {key:'catchpm', value:'catchpm'}, 'CatchPM (Kafka bridge)'),
+          e('option', {key:'hermes', value:'hermes'}, 'Hermes (HTTP)')
+        ])
       ]),
-      e('div', {key:'s', style:{marginBottom:'6px'}}, 'status: '+status),
-      e('pre', {key:'r', style:{whiteSpace:'pre-wrap', margin:0}}, reply || '—')
+
+      e('div', {key:'f-name', className:'brg-field'}, [
+        e('label', {key:'l', className:'brg-label', htmlFor:'brg-username'}, 'Имя пользователя *'),
+        e('input', {key:'i', id:'brg-username', className:'brg-input', type:'text', maxLength:64,
+          value:userName, disabled:busy, placeholder:'как к вам обращаться',
+          onChange:(ev)=>setUserName(ev.target.value)}),
+      ]),
+
+      e('div', {key:'f-prompt', className:'brg-field'}, [
+        e('label', {key:'l', className:'brg-label', htmlFor:'brg-prompt'}, 'Общее поле ввода'),
+        e('textarea', {key:'t', id:'brg-prompt', className:'brg-textarea', maxLength:1500,
+          value:prompt, disabled:busy, placeholder:'введите запрос',
+          onChange:(ev)=>setPrompt(ev.target.value)})
+      ]),
+
+      agent==='catchpm' ? e('div', {key:'f-ids', className:'brg-row'}, [
+        e('div', {key:'u', className:'brg-field'}, [
+          e('label', {key:'l', className:'brg-label', htmlFor:'brg-userid'}, 'user_id'),
+          e('input', {key:'i', id:'brg-userid', className:'brg-input', type:'number', min:1,
+            value:userId, disabled:busy,
+            onChange:(ev)=>setUserId(ev.target.value)})
+        ]),
+        e('div', {key:'m', className:'brg-field'}, [
+          e('label', {key:'l', className:'brg-label'}, 'Модель агента'),
+          e('div', {key:'v', className:'brg-model'}, 'coder (зафиксировано)')
+        ])
+      ]) : null,
+
+      agent==='catchpm' ? e('div', {key:'f-tools', className:'brg-field'}, [
+        e('label', {key:'l', className:'brg-label'}, 'Доступные инструменты (для CatchPM)'),
+        e('div', {key:'t', className:'brg-tools'},
+          ALLOWED_TOOLS.map(t => e('label', {key:t.id, className:'brg-tool'}, [
+            e('input', {key:'cb', type:'checkbox', checked:!!tools[t.id], disabled:busy,
+              onChange:()=>toggleTool(t.id)}),
+            e('span', {key:'lb'}, t.label)
+          ]))
+        )
+      ]) : null,
+
+      e('div', {key:'f-actions', className:'brg-actions'}, [
+        e('button', {key:'b', className:'brg-send', onClick:send, disabled:busy},
+          busy ? 'отправка…' : 'Отправить'),
+        e('div', {key:'s', className:'brg-status '+statusKind}, status)
+      ]),
+
+      reply ? e('pre', {key:'reply', className:'brg-reply'}, reply) : null
     ]);
   }
   ReactDOM.createRoot(rootEl).render(e(App));

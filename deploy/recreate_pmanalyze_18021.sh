@@ -13,6 +13,9 @@ NETWORK="${NETWORK:-catchpm_net}"
 HOST_PORT="${HOST_PORT:-18021}"
 APP_PORT="${APP_PORT:-8000}"
 KAFKA_IP="${KAFKA_IP:-172.28.0.10:9092}"
+AGENT_BRIDGE_GATE_KEY="${AGENT_BRIDGE_GATE_KEY:-}"
+HERMES_BASE_URL="${HERMES_BASE_URL:-http://hermes-dind-18020:8642}"
+HERMES_API_KEY="${HERMES_API_KEY:-}"
 ENV_TMP="/tmp/${NAME}.env"
 
 echo "[1/6] Build image ${IMAGE_TAG} from current workspace"
@@ -36,6 +39,15 @@ for ln in lines:
 kv['KAFKA_BROKER']='${KAFKA_IP}'
 kv['KAFKA_BROKER_DIND']='${KAFKA_IP}'
 kv['CATCHPM_KAFKA_BOOTSTRAP']='${KAFKA_IP}'
+_gk='${AGENT_BRIDGE_GATE_KEY}'
+if _gk:
+    kv['AGENT_BRIDGE_GATE_KEY']=_gk
+_hb='${HERMES_BASE_URL}'
+if _hb:
+    kv['HERMES_BASE_URL']=_hb
+_hk='${HERMES_API_KEY}'
+if _hk:
+    kv['HERMES_API_KEY']=_hk
 kv.setdefault('CATCHPM_BRIDGE_ENABLED','1')
 kv.setdefault('CATCHPM_CHAT_TOPIC','chat-messages')
 kv.setdefault('CATCHPM_TASK_EVENTS_TOPIC','task-events')

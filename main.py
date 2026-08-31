@@ -2130,20 +2130,21 @@ async def local_pipeline_export(mode: str = "sqlite_csv"):
 async def stats():
     async with pool.acquire() as con:
         base = await con.fetchrow("""
-            SELECT count(*) total,
-                   count(*) FILTER (WHERE p.is_relevant) relevant,
+            SELECT count(*) AS total_all,
+                   count(*) FILTER (WHERE p.is_relevant IS NOT NULL) AS total_classified,
+                   count(*) FILTER (WHERE p.is_relevant = TRUE) AS relevant,
                    count(*) FILTER (
                        WHERE p.is_relevant = TRUE
                          AND EXISTS (SELECT 1 FROM process_mining.reviews r WHERE r.article_id = p.id)
-                   ) reviewed,
-                   count(*) FILTER (WHERE p.relevance_score IS NOT NULL) assessed,
-                   count(*) FILTER (WHERE p.is_relevant IS NOT NULL AND p.relevance_score IS NOT NULL AND NOT p.is_relevant) irrelevant,
+                   ) AS reviewed,
+                   count(*) FILTER (WHERE p.relevance_score IS NOT NULL) AS assessed,
+                   count(*) FILTER (WHERE p.is_relevant = FALSE) AS irrelevant,
                    count(*) FILTER (
                        WHERE p.llm_status = 'review_error'
                          AND p.relevance_reasoning IN ('content_unavailable_or_invalid_source_url','invalid_or_unreachable_source_url')
-                   ) invalid_sources,
-                   count(*) FILTER (WHERE p.created_at >= now() - interval '7 days' AND p.is_relevant = TRUE) week_new,
-                   COALESCE(round((avg(p.relevance_score) FILTER (WHERE p.is_relevant))::numeric, 2), 0) avg_relevance
+                   ) AS invalid_sources,
+                   count(*) FILTER (WHERE p.created_at >= now() - interval '7 days' AND p.is_relevant = TRUE) AS week_new,
+                   COALESCE(round((avg(p.relevance_score) FILTER (WHERE p.is_relevant = TRUE))::numeric, 2), 0) AS avg_relevance
             FROM process_mining.papers_metadata p
         """)
         cat_rows = await con.fetch("""
@@ -2196,7 +2197,12 @@ async def stats():
     by_source = { (r["source"] or "unknown"): int(r["c"]) for r in src_rows }
     return {
         "ok": True,
-        "total": base["total"], "relevant": base["relevant"], "reviewed": base["reviewed"],
+        # total в KPI считаем как классифицированные статьи: relevant + irrelevant.
+        # Это устраняет рассинхрон карточки "всего статей" с парой релевантные/нерелевантные.
+        "total": base["total_classified"],
+        "total_all": base["total_all"],
+        "unclassified": int(base["total_all"] or 0) - int(base["total_classified"] or 0),
+        "relevant": base["relevant"], "reviewed": base["reviewed"],
         "assessed": base["assessed"], "irrelevant": base["irrelevant"],
         "invalid_sources": base["invalid_sources"],
         "week_new": base["week_new"], "avg_relevance": float(base["avg_relevance"]),

@@ -293,7 +293,7 @@
     min-width:190px; max-width:210px;
     border:2px solid var(--ink); background:var(--paper); color:var(--ink);
     padding:14px 16px; display:flex; flex-direction:column; gap:2px;
-    align-self:stretch;
+    align-self:start;
   }
   .wx-city{font-family:'Space Mono',monospace; font-size:10px;
     letter-spacing:.12em; text-transform:uppercase; color:var(--orange); z-index:2}
@@ -1039,12 +1039,6 @@
       <h3>Knowledge Graph</h3>
       <div class="kg-actions">
         <span class="mono kg-info" id="kg-graph-info">узлы: — · связи: —</span>
-        <label class="mono kg-layout-wrap" for="kg-layout-mode">вид</label>
-        <select id="kg-layout-mode" class="kg-layout-mode" aria-label="Режим раскладки графа">
-          <option value="force">force</option>
-          <option value="hierarchical">hierarchical</option>
-          <option value="radial">radial</option>
-        </select>
         <button class="kg-refresh" id="btn-kg-refresh" title="Обновить граф" aria-label="Обновить граф">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M21 12a9 9 0 1 1-2.64-6.36"/>

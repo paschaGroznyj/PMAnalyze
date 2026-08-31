@@ -646,8 +646,8 @@
 
 /* PKB-GRAPH-CSS */
   .pkb-graph-wrap{margin-top:18px; border-top:2px dashed var(--ink); padding-top:16px}
-  .pkb-kg-head{border:2px solid var(--ink); background:rgba(30,26,22,.03); padding:12px; margin-bottom:12px; display:flex; flex-direction:column; gap:10px; overflow:hidden}
-  .pkb-kg-info{display:flex; align-items:center; justify-content:space-between; gap:10px}
+  .pkb-kg-head{border:2px solid var(--ink); background:rgba(30,26,22,.03); padding:12px; margin-bottom:12px; display:flex; flex-direction:column; gap:10px; overflow:hidden; align-items:stretch; text-align:left}
+  .pkb-kg-info{display:flex; align-items:center; justify-content:space-between; gap:10px; text-align:left}
   /* перебиваем базовый .kg-search-row/.kg-inp-wrap повышенной специфичностью (2 класса) */
   .pkb-graph-wrap .pkb-kg-search-row, .kg-search-row.pkb-kg-search-row{display:block !important; gap:0}
   .pkb-graph-wrap .pkb-kg-search-row .pkb-kg-inp-wrap, .kg-inp-wrap.pkb-kg-inp-wrap{position:relative; display:block !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; min-width:0 !important}
@@ -674,13 +674,15 @@
   .pkb-kg-card .pkb-kg-neigh button{font-size:11px; padding:4px 8px; border:2px solid var(--ink); background:var(--sky); cursor:pointer; box-shadow:2px 2px 0 var(--ink)}
   .pkb-kg-card .pkb-kg-neigh button:hover{transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--orange)}
   @media(max-width:920px){
+    .pkb-kg-head{align-items:stretch; text-align:left}
+    .pkb-kg-info{display:flex; text-align:left; justify-content:space-between}
     .pkb-kg-canvas{height:380px}
     .pkb-kg-search-row{gap:8px; align-items:stretch}
     .pkb-kg-inp-wrap{flex:1 1 100%; width:100%}
     .pkb-kg-llm{width:100%}
   }
   @media(max-width:500px){
-    .pkb-kg-head{padding:10px}
+    .pkb-kg-head{padding:10px; align-items:stretch; text-align:left}
     .pkb-kg-canvas{height:340px; box-shadow:3px 3px 0 var(--ink)}
     .pkb-kg-search-row{flex-direction:column; align-items:stretch}
     .pkb-kg-inp-wrap{flex:1 1 100%; width:100%}

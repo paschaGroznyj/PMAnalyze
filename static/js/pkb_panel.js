@@ -260,6 +260,18 @@
       if (!keyConfirmed) {
         pendingUrl = url;
         openModal();
+        api("/api/private-kb/stats", { method: "GET" }).then(function (st) {
+          if (st && st.has_secret) {
+            setModalStatus("", null);
+            showScreen("verify");
+            var inp = $("pkb-key-input");
+            if (inp) { inp.value = ""; inp.focus(); }
+          } else {
+            showScreen("choice");
+          }
+        }).catch(function () {
+          showScreen("choice");
+        });
         return;
       }
       startImport(url);
@@ -267,18 +279,35 @@
   }
 
 
-  // ===== PKB GRAPH =====
+  // ===== PKB GRAPH (переписано с нуля, единый путь клика через vis) =====
   var pkbNet = null;
   var pkbNodesDS = null;
   var pkbEdgesDS = null;
   var pkbAdj = {};          // id -> [ids]
-  var pkbAllNodes = [];     // сырые узлы из full
-  var pkbSeeds = [];        // текущие seed-id (search)
-  var pkbBaseColor = "#CFE6F7";
+  var pkbNodeMeta = {};     // id -> {label, title, importance}
+  var pkbBuilt = false;
+  var pkbSearchTimer = null;
+  var pkbLastItems = [];
+  var PKB_PAL = ["#FF5A1F", "#FF7D51", "#FFA581", "#FFC9B1", "#FFE3D8", "#FFF1EA"];
 
-  function pkbShowGraphWrap() {
-    var w = $("pkb-graph-wrap");
-    if (w) w.hidden = false;
+  function pkbEscHtml(s) {
+    return String(s || "").replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function pkbMdToHtml(md) {
+    if (!md) return "";
+    return pkbEscHtml(md)
+      .replace(/\n\n+/g, "</p><p>")
+      .replace(/\n/g, "<br>")
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/`(.+?)`/g, "<code>$1</code>");
+  }
+  function pkbColorFor(imp) {
+    if (imp >= 0.75) return "#FF5A1F";
+    if (imp >= 0.55) return "#FBE7A1";
+    if (imp >= 0.40) return "#CDE8D5";
+    return "#CFE6F7";
   }
 
   async function pkbApiGet(path) {
@@ -294,20 +323,28 @@
     return d;
   }
 
-  function pkbColorFor(imp) {
-    // палитра по важности
-    if (imp >= 0.75) return "#FF5A1F";
-    if (imp >= 0.55) return "#FBE7A1";
-    if (imp >= 0.4) return "#CDE8D5";
-    return "#CFE6F7";
+  function pkbShowGraphWrap() {
+    var w = $("pkb-graph-wrap");
+    if (w) w.hidden = false;
+  }
+  function pkbCloseCard() {
+    var card = $("pkb-kg-card");
+    if (card) { card.hidden = true; card.innerHTML = ""; }
+  }
+
+  function pkbNormNodeId(nid) {
+    if (nid === null || nid === undefined) return null;
+    var s = String(nid).trim();
+    return s ? s : null;
   }
 
   function pkbBuildNetwork(nodes, edges) {
-    var canvas = $("pkb-kg-canvas");
-    if (!canvas || !window.vis) return;
+    var host = $("pkb-kg-canvas");
+    if (!host || !window.vis) return;
+
     var visNodes = nodes.map(function (n) {
       return {
-        id: n.id, label: undefined, title: n.full_label || n.label,
+        id: n.id, title: n.full_label || n.label,
         color: { background: pkbColorFor(n.importance), border: "#1E1A16" },
         borderWidth: 2,
         font: { face: "Space Mono", size: 11, color: "#1E1A16" },
@@ -321,27 +358,201 @@
         color: { color: (e.relation && e.relation !== "relates_to") ? "#FF5A1F" : "#7b6f8f" },
         arrows: "to", smooth: { type: "continuous" } };
     });
+
     pkbNodesDS = new vis.DataSet(visNodes);
     pkbEdgesDS = new vis.DataSet(visEdges);
-    // adjacency
+
     pkbAdj = {};
     edges.forEach(function (e) {
       (pkbAdj[e.from] = pkbAdj[e.from] || []).push(e.to);
       (pkbAdj[e.to] = pkbAdj[e.to] || []).push(e.from);
     });
-    var data = { nodes: pkbNodesDS, edges: pkbEdgesDS };
+    pkbNodeMeta = {};
+    nodes.forEach(function (n) {
+      pkbNodeMeta[n.id] = { label: n.label || "", title: n.full_label || n.title || "", importance: n.importance };
+    });
+
     var options = {
       physics: { stabilization: { iterations: 180 }, barnesHut: { gravitationalConstant: -8000, springLength: 130 } },
-      interaction: { hover: true, tooltipDelay: 120 },
+      interaction: { hover: true, tooltipDelay: 120, dragNodes: true, dragView: true, zoomView: true },
       nodes: { scaling: { min: 12, max: 34 } }
     };
-    if (pkbNet) { pkbNet.destroy(); pkbNet = null; }
-    pkbNet = new vis.Network(canvas, data, options);
+
+    if (pkbNet) { try { pkbNet.destroy(); } catch (e) {} pkbNet = null; }
+    pkbNet = new vis.Network(host, { nodes: pkbNodesDS, edges: pkbEdgesDS }, options);
+
+    // ЕДИНСТВЕННЫЙ путь: событие vis "click". Никаких нативных canvas-listener'ов
+    // с preventDefault — именно они ломали drag/zoom и уводили клик в слайдер.
     pkbNet.on("click", function (params) {
-      if (params.nodes && params.nodes.length) {
-        pkbOpenCard(params.nodes[0]);
+      var nid = null;
+      if (params && params.nodes && params.nodes.length) {
+        nid = params.nodes[0];
+      } else if (params && params.pointer && params.pointer.DOM) {
+        // fallback: params.nodes бывает пуст, если клик распознан как микро-drag —
+        // достаём узел прямо из координат указателя
+        try { nid = pkbNet.getNodeAt(params.pointer.DOM); } catch (e) {}
+      }
+      nid = pkbNormNodeId(nid);
+      if (nid) {
+        pkbFocusNode(nid, true);
+      } else {
+        pkbCloseCard();
       }
     });
+    // selectNode — ещё один надёжный источник, если click проглотил узел
+    pkbNet.on("selectNode", function (params) {
+      var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
+      nid = pkbNormNodeId(nid);
+      if (nid) pkbFocusNode(nid, true);
+    });
+    pkbNet.on("doubleClick", function (params) {
+      var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
+      nid = pkbNormNodeId(nid);
+      if (nid) pkbFocusNode(nid, true);
+    });
+    pkbNet.on("hold", function (params) {
+      var nid = (params && params.nodes && params.nodes.length) ? params.nodes[0] : null;
+      nid = pkbNormNodeId(nid);
+      if (nid) pkbFocusNode(nid, true);
+    });
+
+    pkbBuilt = true;
+  }
+
+  function pkbFocusNode(nodeId, openCard) {
+    nodeId = pkbNormNodeId(nodeId);
+    if (!nodeId || !pkbNet) return;
+    try {
+      pkbNet.selectNodes([nodeId]);
+      pkbNet.focus(nodeId, { scale: 1.15, animation: { duration: 500, easingFunction: "easeInOutQuad" } });
+    } catch (e) {}
+    if (pkbNodesDS) {
+      try {
+        pkbNodesDS.update([{ id: nodeId, borderWidth: 5, color: { background: "#FF5A1F", border: "#1E1A16" } }]);
+        setTimeout(function () {
+          try {
+            var m = pkbNodeMeta[nodeId] || {};
+            pkbNodesDS.update([{ id: nodeId, borderWidth: 2, color: { background: pkbColorFor(m.importance), border: "#1E1A16" } }]);
+          } catch (e) {}
+        }, 1200);
+      } catch (e) {}
+    }
+    if (openCard) pkbOpenCard(nodeId);
+  }
+
+  function pkbEnableCardScrollIsolation(card) {
+    if (!card || card.__pkbWheelBound) return;
+    var stop = function (e) { e.stopPropagation(); };
+    ["wheel", "mousewheel", "DOMMouseScroll", "touchstart", "touchmove", "pointerdown", "pointermove"].forEach(function (evt) {
+      card.addEventListener(evt, stop, { passive: true });
+    });
+    card.__pkbWheelBound = true;
+  }
+
+  async function pkbOpenCard(nodeId) {
+    nodeId = pkbNormNodeId(nodeId);
+    var card = $("pkb-kg-card");
+    if (!card || !nodeId) return;
+    card.hidden = false;
+    card.innerHTML = '<div class="mono" style="padding:6px 0">загрузка карточки…</div>';
+    try {
+      var d = await pkbApiGet("/api/private-kb/graph/card?node_id=" + encodeURIComponent(nodeId));
+      if (d && d.ok === false) throw new Error(d.error || "not_found");
+      var tags = (d.tags || []).map(function (t) { return "#" + t; }).join(" ");
+      var neigh = (d.neighbors || []).map(function (nb) {
+        return '<button type="button" data-nid="' + pkbEscHtml(nb.node_id) + '">' +
+          pkbEscHtml(nb.label || nb.node_id) + (nb.relation ? ' · ' + pkbEscHtml(nb.relation) : '') + '</button>';
+      }).join("");
+      card.innerHTML =
+        '<button class="pkb-kg-card-close" type="button" aria-label="Закрыть">×</button>' +
+        '<h4>' + pkbEscHtml(d.label || d.node_id) + '</h4>' +
+        (tags ? '<div class="mono" style="font-size:11px;margin-bottom:6px;color:#6b5a45">' + pkbEscHtml(tags) + '</div>' : '') +
+        '<div class="pkb-kg-card-text">' + pkbMdToHtml(d.text || d.text_knowledge || "") + '</div>' +
+        (neigh ? '<div class="pkb-kg-neigh">' + neigh + '</div>' : '');
+      pkbEnableCardScrollIsolation(card);
+      var x = card.querySelector(".pkb-kg-card-close");
+      if (x) x.addEventListener("click", pkbCloseCard);
+      Array.prototype.forEach.call(card.querySelectorAll(".pkb-kg-neigh button"), function (b) {
+        b.addEventListener("click", function () { pkbFocusNode(b.getAttribute("data-nid"), true); });
+      });
+    } catch (e) {
+      card.innerHTML =
+        '<button class="pkb-kg-card-close" type="button" aria-label="Закрыть">×</button>' +
+        '<div class="mono">ошибка карточки: ' + pkbEscHtml(e.message) + '</div>';
+      pkbEnableCardScrollIsolation(card);
+      var x2 = card.querySelector(".pkb-kg-card-close");
+      if (x2) x2.addEventListener("click", pkbCloseCard);
+    }
+  }
+
+  // ---- локальный realtime-фильтр ----
+  function pkbFindMatches(q) {
+    var text = String(q || "").trim().toLowerCase();
+    if (text.length < 2) return [];
+    var toks = text.split(/\s+/).filter(Boolean);
+    var out = [];
+    for (var id in pkbNodeMeta) {
+      if (!pkbNodeMeta.hasOwnProperty(id)) continue;
+      var m = pkbNodeMeta[id];
+      var hay = ((m.label || "") + " " + (m.title || "")).toLowerCase();
+      if (toks.every(function (t) { return hay.indexOf(t) !== -1; })) out.push(id);
+    }
+    return out;
+  }
+  function pkbBfsDepth(matchIds, depth) {
+    var dmap = {}, queue = [];
+    matchIds.forEach(function (id) { dmap[id] = 0; queue.push(id); });
+    while (queue.length) {
+      var cur = queue.shift(), curD = dmap[cur] || 0;
+      if (curD >= depth) continue;
+      (pkbAdj[cur] || []).forEach(function (nb) {
+        if (!(nb in dmap)) { dmap[nb] = curD + 1; queue.push(nb); }
+      });
+    }
+    return dmap;
+  }
+  function pkbApplySelection(matchIds, depthMap) {
+    if (!pkbNodesDS) return;
+    var selected = depthMap ? Object.keys(depthMap) : (matchIds || []);
+    var selSet = {};
+    selected.forEach(function (id) { selSet[id] = true; });
+    var upd = [];
+    pkbNodesDS.get().forEach(function (n) {
+      if (!selected.length) {
+        var m0 = pkbNodeMeta[n.id] || {};
+        upd.push({ id: n.id, opacity: 1, color: { background: pkbColorFor(m0.importance), border: "#1E1A16" },
+          font: { face: "Space Mono", size: 11, color: "#1E1A16" } });
+        return;
+      }
+      if (selSet[n.id]) {
+        var lvl = depthMap ? Number(depthMap[n.id] || 0) : 0;
+        upd.push({ id: n.id, opacity: 1, color: { background: PKB_PAL[Math.min(lvl, PKB_PAL.length - 1)], border: "#1E1A16" },
+          font: { face: "Space Mono", size: 11, color: lvl === 0 ? "#fff" : "#1E1A16" } });
+      } else {
+        upd.push({ id: n.id, opacity: 0.18, color: { background: "#EDE7DF", border: "#C9BEB0" },
+          font: { face: "Space Mono", size: 11, color: "#B4A895" } });
+      }
+    });
+    try { pkbNodesDS.update(upd); } catch (e) {}
+  }
+  function pkbRealtimeFilter() {
+    var q = (($("pkb-kg-query") || {}).value || "").trim();
+    var depth = parseInt((($("pkb-kg-depth") || {}).value) || "1", 10);
+    var hint = $("pkb-kg-hint");
+    if (!q) {
+      pkbApplySelection([], null);
+      if (hint) hint.textContent = "Подсветка — по мере ввода. Глубина связей — ползунком. Лупа — семантика + LLM.";
+      return;
+    }
+    var matches = pkbFindMatches(q);
+    if (!matches.length) {
+      pkbApplySelection([], null);
+      if (hint) hint.textContent = "Совпадений нет. Нажмите лупу для семантического поиска по смыслу.";
+      return;
+    }
+    var dmap = pkbBfsDepth(matches, depth);
+    pkbApplySelection(matches, dmap);
+    if (hint) hint.textContent = "Найдено: " + matches.length + " · с глубиной " + depth + ": " + Object.keys(dmap).length + ".";
   }
 
   async function pkbLoadFull() {
@@ -351,13 +562,13 @@
     if (loader) loader.hidden = false;
     try {
       var d = await pkbApiGet("/api/private-kb/graph/full");
-      pkbAllNodes = d.nodes || [];
       pkbBuildNetwork(d.nodes || [], d.edges || []);
+      pkbCloseCard();
       var c = $("pkb-kg-counts");
       if (c) c.textContent = "узлов: " + (d.counts ? d.counts.nodes : (d.nodes || []).length) +
         " · связей: " + (d.counts ? d.counts.edges : (d.edges || []).length);
     } catch (e) {
-      if (btn) { btn.style.display = ""; }
+      if (btn) btn.style.display = "";
       var cc = $("pkb-kg-counts");
       if (cc) cc.textContent = "ошибка: " + e.message;
     } finally {
@@ -365,61 +576,72 @@
     }
   }
 
-  async function pkbOpenCard(nodeId) {
-    var card = $("pkb-kg-card");
-    if (!card) return;
-    card.hidden = false;
-    card.innerHTML = '<div class="mono">загрузка…</div>';
-    try {
-      var d = await pkbApiGet("/api/private-kb/graph/card?node_id=" + encodeURIComponent(nodeId));
-      var tags = (d.tags || []).map(function (t) { return "#" + t; }).join(" ");
-      var neigh = (d.neighbors || []).map(function (nb) {
-        return '<button data-nid="' + nb.node_id + '">' + (nb.label || nb.node_id) +
-          (nb.relation ? ' · ' + nb.relation : '') + '</button>';
-      }).join("");
-      card.innerHTML =
-        '<h4>' + (d.label || d.node_id) + '</h4>' +
-        (tags ? '<div class="mono" style="font-size:11px;margin-bottom:6px;color:#6b5a45">' + tags + '</div>' : '') +
-        '<div class="pkb-kg-card-text">' + ((d.text || "").replace(/</g, "&lt;")) + '</div>' +
-        (neigh ? '<div class="pkb-kg-neigh">' + neigh + '</div>' : '');
-      Array.prototype.forEach.call(card.querySelectorAll(".pkb-kg-neigh button"), function (b) {
-        b.addEventListener("click", function () {
-          var nid = b.getAttribute("data-nid");
-          if (pkbNet) { try { pkbNet.selectNodes([nid]); pkbNet.focus(nid, { scale: 1.1, animation: true }); } catch (e) {} }
-          pkbOpenCard(nid);
-        });
-      });
-    } catch (e) {
-      card.innerHTML = '<div class="mono">ошибка карточки: ' + e.message + '</div>';
-    }
+  // ---- семантический поиск + LLM ----
+  function pkbRenderSummary(md, items, metaLabel) {
+    items = items || [];
+    var html = "<p>" + pkbMdToHtml(md) + "</p>";
+    html = html.replace(/\[((?:\d+\s*(?:,\s*\d+\s*)*))\]/g, function (all, body) {
+      var nums = String(body || "").split(",").map(function (s) { return parseInt(s.trim(), 10); })
+        .filter(function (n) { return !isNaN(n); });
+      if (!nums.length) return all;
+      return nums.map(function (idx) {
+        if (idx < 1 || idx > items.length) return "[" + idx + "]";
+        var it = items[idx - 1] || {};
+        var nid = String(it.node_id || it.id || "");
+        if (!nid) return "[" + idx + "]";
+        return '<a href="#" class="pkb-ref-link" data-nid="' + pkbEscHtml(nid) + '">[' + idx + "]</a>";
+      }).join(", ");
+    });
+    var title = metaLabel
+      ? '<div class="mono" style="font-size:11px;color:#6b6055;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">LLM-саммари · ' + pkbEscHtml(metaLabel) + "</div>"
+      : "";
+    return title + html;
   }
-
+  function pkbWireRefLinks() {
+    var box = $("pkb-kg-summary");
+    if (!box) return;
+    Array.prototype.forEach.call(box.querySelectorAll(".pkb-ref-link"), function (a) {
+      a.addEventListener("click", function (e) {
+        e.preventDefault();
+        var nid = a.getAttribute("data-nid");
+        if (nid) pkbFocusNode(nid, true);
+      });
+    });
+  }
   async function pkbSearch() {
     var q = (($("pkb-kg-query") || {}).value || "").trim();
-    if (!q) { pkbLoadFull(); return; }
+    if (!q) { if (pkbBuilt) pkbApplySelection([], null); return; }
     var depth = parseInt((($("pkb-kg-depth") || {}).value) || "1", 10);
     var wantSum = !!(($("pkb-kg-want-summary") || {}).checked);
     var loader = $("pkb-kg-loader");
-    var btn = $("pkb-kg-load-full");
     var sumBox = $("pkb-kg-summary");
-    if (btn) btn.style.display = "none";
     if (loader) loader.hidden = false;
-    if (sumBox) { sumBox.hidden = true; sumBox.textContent = ""; }
+    if (sumBox) { sumBox.hidden = true; sumBox.innerHTML = ""; }
     try {
       var d = await pkbApiPost("/api/private-kb/graph/search", { query: q, depth: depth, want_summary: wantSum });
-      pkbSeeds = d.seeds || [];
+      pkbLastItems = d.nodes || [];
       pkbBuildNetwork(d.nodes || [], d.edges || []);
-      // подсветка seed-узлов
-      if (pkbNodesDS && pkbSeeds.length) {
-        var upd = pkbSeeds.map(function (id) { return { id: id, borderWidth: 4, color: { background: "#FF5A1F", border: "#1E1A16" } , size: 18 }; });
-        try { pkbNodesDS.update(upd); } catch (e) {}
+      pkbCloseCard();
+      var seeds = d.seeds || [];
+      if (pkbNodesDS && seeds.length) {
+        try {
+          pkbNodesDS.update(seeds.map(function (id) {
+            return { id: id, borderWidth: 4, color: { background: "#FF5A1F", border: "#1E1A16" }, size: 18 };
+          }));
+        } catch (e) {}
       }
       var c = $("pkb-kg-counts");
-      if (c) c.textContent = "найдено сидов: " + (d.found || 0) + " · узлов: " +
+      if (c) c.textContent = "сидов: " + (d.found || 0) + " · узлов: " +
         (d.counts ? d.counts.nodes : 0) + " · связей: " + (d.counts ? d.counts.edges : 0);
       if (wantSum && sumBox) {
-        if (d.summary) { sumBox.hidden = false; sumBox.textContent = d.summary; }
-        else if (d.summary_error) { sumBox.hidden = false; sumBox.textContent = "саммари недоступно: " + d.summary_error; }
+        if (d.summary) {
+          sumBox.hidden = false;
+          sumBox.innerHTML = pkbRenderSummary(d.summary, pkbLastItems, q);
+          pkbWireRefLinks();
+        } else if (d.summary_error) {
+          sumBox.hidden = false;
+          sumBox.innerHTML = '<span class="mono" style="font-size:11px;color:#9a8f82">саммари недоступно: ' + pkbEscHtml(d.summary_error) + "</span>";
+        }
       }
     } catch (e) {
       var cc = $("pkb-kg-counts");
@@ -429,66 +651,47 @@
     }
   }
 
-  var pkbSearchTimer = null;
   function pkbBindGraph() {
     var btnFull = $("pkb-kg-load-full");
     if (btnFull) btnFull.addEventListener("click", pkbLoadFull);
     var refresh = $("pkb-kg-refresh");
     if (refresh) refresh.addEventListener("click", function () {
-      var q = (($("pkb-kg-query") || {}).value || "").trim();
-      if (q) pkbSearch(); else pkbLoadFull();
+      var qEl = $("pkb-kg-query");
+      pkbLoadFull().then(function () { if (qEl && qEl.value.trim()) pkbRealtimeFilter(); });
     });
     var go = $("pkb-kg-search-go");
     if (go) go.addEventListener("click", pkbSearch);
     var qi = $("pkb-kg-query");
     if (qi) {
-      qi.addEventListener("keydown", function (e) { if (e.key === "Enter") pkbSearch(); });
+      qi.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); pkbSearch(); } });
       qi.addEventListener("input", function () {
         if (pkbSearchTimer) clearTimeout(pkbSearchTimer);
-        pkbSearchTimer = setTimeout(function () {
-          var v = qi.value.trim();
-          if (v.length >= 3) pkbSearch();
-        }, 400);
+        pkbSearchTimer = setTimeout(pkbRealtimeFilter, 140);
       });
     }
     var depth = $("pkb-kg-depth");
     var badge = $("pkb-kg-depth-badge");
     if (depth) depth.addEventListener("input", function () {
       if (badge) badge.textContent = depth.value;
-      var q = (($("pkb-kg-query") || {}).value || "").trim();
-      if (q) {
-        if (pkbSearchTimer) clearTimeout(pkbSearchTimer);
-        pkbSearchTimer = setTimeout(pkbSearch, 250);
-      }
+      pkbRealtimeFilter();
     });
   }
 
-  // ---------- кнопка "Открыть мой граф": заранее спросить ключ ----------
   async function openGraphFlow() {
-    // если ключ уже подтверждён в этой сессии — сразу открываем граф
-    if (keyConfirmed) {
-      pkbShowGraphWrap();
-      pkbLoadFull();
-      return;
-    }
-    // иначе проверим, есть ли вообще ключ у пользователя,
-    // и откроем модалку на нужном экране
-    pendingUrl = null; // важно: не запускать импорт после ввода ключа
+    if (keyConfirmed) { pkbShowGraphWrap(); if (!pkbBuilt) pkbLoadFull(); return; }
+    pendingUrl = null;
     try {
       var st = await api("/api/private-kb/stats", { method: "GET" });
       openModal();
       if (st && st.has_secret) {
-        // ключ есть -> сразу экран ввода
         setModalStatus("", null);
         showScreen("verify");
         var inp = $("pkb-key-input");
         if (inp) { inp.value = ""; inp.focus(); }
       } else {
-        // ключа нет -> экран выбора (сгенерировать / ввести)
         showScreen("choice");
       }
     } catch (e) {
-      // не смогли узнать статус — открываем обычную модалку выбора
       openModal();
       showScreen("choice");
     }
@@ -499,7 +702,8 @@
     if (btn) btn.addEventListener("click", openGraphFlow);
   }
 
-  function init() {
+  // ---- init ----
+  function pkbInit() {
     bindModal();
     bindStart();
     bindOpenGraph();
@@ -507,8 +711,8 @@
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", pkbInit);
   } else {
-    init();
+    pkbInit();
   }
 })();

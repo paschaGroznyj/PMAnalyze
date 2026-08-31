@@ -258,6 +258,7 @@
     .btn.kg-toggle{min-height:44px; width:100%; justify-content:center; text-align:center}
     .btn.kg-toggle.running{padding-left:44px; padding-right:44px}
     .search-row{display:block}
+    .search-row .search-llm{display:inline-flex; align-items:center; gap:6px; width:100%; justify-content:flex-start; margin-top:8px}
     .kg-search-row{gap:10px; align-items:stretch}
     .kg-inp-wrap{width:100%; min-width:0}
     .kg-search-row .search-llm{display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap; width:100%; justify-content:flex-start; margin-top:8px}
@@ -321,8 +322,8 @@
   .search-vcount{font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.05em;
     color:#6b6055; border:2px solid var(--ink); background:var(--mint); padding:4px 10px}
   .search-vcount b{color:var(--ink)}
-  .search-row{display:block; margin-top:14px}
-  .search-inp-wrap{position:relative; width:100%; min-width:0}
+  .search-row{display:flex; align-items:center; gap:12px; flex-wrap:nowrap; margin-top:14px}
+  .search-inp-wrap{position:relative; flex:1; min-width:0}
   #search-q{width:100%; box-sizing:border-box; border:2px solid var(--ink); background:#fff;
     padding:12px 48px 12px 14px; font-family:'Space Mono',monospace; font-size:13px; color:var(--ink)}
   #search-q:focus{outline:none; box-shadow:3px 3px 0 var(--orange)}
@@ -330,7 +331,7 @@
     border:2px solid var(--ink); background:var(--yellow); cursor:pointer; width:34px; height:34px; padding:0; display:inline-flex; align-items:center; justify-content:center}
   .search-go:hover{background:var(--orange)}
   .search-go svg{width:18px; height:18px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round}
-  .search-llm{white-space:nowrap; display:flex; align-items:center; gap:6px; font-size:12px}
+  .search-llm{white-space:nowrap; display:inline-flex; align-items:center; gap:6px; font-size:12px; margin-left:0}
   .search-hint{margin-top:8px; font-size:10px; color:#9a8f82; letter-spacing:.04em}
   .quick-drop{position:absolute; left:0; right:0; top:calc(100% + 4px); z-index:30;
     background:#fff; border:2px solid var(--ink); max-height:280px; overflow-y:auto; display:none}
@@ -654,7 +655,7 @@
   .pkb-kg-danger:hover{background:#FDE6DE; transform:translateY(-1px)}
   .pkb-kg-danger:active{transform:scale(.96)}
   .pkb-kg-danger svg{width:17px; height:17px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
-  .pkb-kg-danger-all{padding:0 10px; font-size:11px; letter-spacing:.04em; font-family:'Space Mono',monospace}
+  .pkb-kg-danger-all{padding:0; width:34px; min-width:34px; font-size:11px; letter-spacing:.04em; font-family:'Space Mono',monospace}
   /* перебиваем базовый .kg-search-row/.kg-inp-wrap повышенной специфичностью (2 класса) */
   .pkb-graph-wrap .pkb-kg-search-row, .kg-search-row.pkb-kg-search-row{display:block !important; gap:0}
   .pkb-graph-wrap .pkb-kg-search-row .pkb-kg-inp-wrap, .kg-inp-wrap.pkb-kg-inp-wrap{position:relative; display:block !important; flex:0 0 100% !important; width:100% !important; max-width:none !important; min-width:0 !important}
@@ -677,9 +678,9 @@
   .pkb-card-modal-box .art-close{z-index:3}
   .pkb-kg-card{position:relative; z-index:2; width:100%; max-height:88vh; overflow:auto; margin:0; border:0; background:var(--paper); box-shadow:none; padding:22px 24px 18px; pointer-events:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch}
   .pkb-kg-card h4{margin:0 0 8px; font-size:15px; padding-right:70px}
-  .pkb-kg-card .pkb-kg-card-delete{position:absolute; top:14px; right:44px; min-width:32px; min-height:32px; display:inline-flex; align-items:center; justify-content:center; border:2px solid var(--ink); background:#fff; cursor:pointer; z-index:3}
-  .pkb-kg-card .pkb-kg-card-delete:hover{background:#FDE6DE}
-  .pkb-kg-card .pkb-kg-card-delete svg{width:16px; height:16px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
+  .pkb-kg-card .pkb-kg-card-delete{position:absolute; top:14px; right:44px; width:24px; height:24px; display:inline-flex; align-items:center; justify-content:center; border:none; background:transparent; padding:0; cursor:pointer; z-index:3}
+  .pkb-kg-card .pkb-kg-card-delete:hover{opacity:.72}
+  .pkb-kg-card .pkb-kg-card-delete svg{width:18px; height:18px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
   .pkb-kg-card .pkb-kg-card-text{font-size:13px; line-height:1.5; white-space:pre-wrap}
   .pkb-kg-card .pkb-kg-neigh{margin-top:10px; display:flex; flex-wrap:wrap; gap:6px}
   .pkb-kg-card .pkb-kg-neigh button{font-size:11px; padding:4px 8px; border:2px solid var(--ink); background:var(--sky); cursor:pointer; box-shadow:2px 2px 0 var(--ink)}
@@ -694,7 +695,7 @@
   @media(max-width:500px){
     .pkb-kg-tools{width:100%; justify-content:flex-start}
     .pkb-kg-danger{min-height:40px}
-    .pkb-kg-danger-all{min-height:40px}
+    .pkb-kg-danger-all{min-height:40px; width:40px; min-width:40px}
     .pkb-confirm-actions .pkb-btn{width:100%}
   }
   @media(max-width:920px){
@@ -717,7 +718,7 @@
     .pkb-card-modal-box{width:96vw; max-height:92vh}
     .pkb-kg-card{max-height:92vh; padding:14px 12px 12px}
     .pkb-kg-card .pkb-kg-neigh button{min-height:36px; padding:8px 10px}
-    .pkb-kg-card .pkb-kg-card-delete{min-width:36px; min-height:36px; top:12px; right:48px}
+    .pkb-kg-card .pkb-kg-card-delete{width:24px; height:24px; top:12px; right:48px}
     #pkb-kg-load-full{width:100px; height:100px}
   }
 

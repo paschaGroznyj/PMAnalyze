@@ -195,28 +195,36 @@ async def collect_digest(pool, preset: str) -> dict:
 
 
 def _review_excerpt_2_3(md: str) -> str:
-    """Сильно сокращаем ревью: оставляем примерно 1/3 исходного текста."""
+    """Короткое превью ревью: строго до 300 символов (включая многоточие)."""
     if not md:
         return ""
     txt = md.replace("\r", "").strip()
     if not txt:
         return ""
 
-    keep = int(len(txt) * 0.33)
-    keep = max(280, min(keep, 2100))
-    if len(txt) <= keep:
+    max_chars = 300
+    if len(txt) <= max_chars:
         return txt
 
-    cut = txt[:keep]
-    # стараемся резать по границе абзаца, потом по предложению
-    last_para = cut.rfind("\n\n")
-    if last_para > 300:
-        cut = cut[:last_para]
+    # Оставляем место под многоточие и стараемся резать по естественной границе.
+    hard = txt[: max_chars - 1]
+
+    # 1) граница абзаца
+    last_para = hard.rfind("\n\n")
+    if last_para >= 180:
+        cut = hard[:last_para].rstrip()
     else:
-        last_dot = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
-        if last_dot > 250:
-            cut = cut[: last_dot + 1]
-    return cut.rstrip() + "\n…"
+        # 2) граница предложения
+        last_dot = max(hard.rfind(". "), hard.rfind("! "), hard.rfind("? "))
+        if last_dot >= 160:
+            cut = hard[: last_dot + 1].rstrip()
+        else:
+            # 3) граница слова
+            last_sp = hard.rfind(" ")
+            cut = hard[:last_sp].rstrip() if last_sp >= 120 else hard.rstrip()
+
+    out = (cut + "…").strip()
+    return out[:max_chars]
 
 
 def render_reviews_markdown(data: dict) -> str:

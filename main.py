@@ -76,7 +76,14 @@ AUTHENTIK_HEADER_UID = os.getenv("AUTHENTIK_HEADER_UID", "x-authentik-uid")
 AUTHENTIK_HEADER_EMAIL = os.getenv("AUTHENTIK_HEADER_EMAIL", "x-authentik-email")
 AUTHENTIK_HEADER_GROUPS = os.getenv("AUTHENTIK_HEADER_GROUPS", "x-authentik-groups")
 
-CATCHPM_KAFKA_BOOTSTRAP = os.getenv("CATCHPM_KAFKA_BOOTSTRAP", "172.28.0.10:9092")
+# Kafka bootstrap для DashPM bridge:
+# приоритет: явный CATCHPM_KAFKA_BOOTSTRAP -> KAFKA_BROKER_DIND -> KAFKA_BROKER -> дефолт
+CATCHPM_KAFKA_BOOTSTRAP = (
+    os.getenv("CATCHPM_KAFKA_BOOTSTRAP")
+    or os.getenv("KAFKA_BROKER_DIND")
+    or os.getenv("KAFKA_BROKER")
+    or "172.28.0.10:9092"
+)
 CATCHPM_CHAT_TOPIC = os.getenv("CATCHPM_CHAT_TOPIC", "chat-messages")
 CATCHPM_TASK_EVENTS_TOPIC = os.getenv("CATCHPM_TASK_EVENTS_TOPIC", "task-events")
 CATCHPM_BRIDGE_ENABLED = os.getenv("CATCHPM_BRIDGE_ENABLED", "1").lower() in ("1", "true", "yes", "on")

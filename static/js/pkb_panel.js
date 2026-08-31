@@ -650,19 +650,23 @@
     var q = (($("pkb-kg-query") || {}).value || "").trim();
     var depth = parseInt((($("pkb-kg-depth") || {}).value) || "1", 10);
     var hint = $("pkb-kg-hint");
+    var chunks = $("pkb-kg-chunks-count");
     if (!q) {
       pkbApplySelection([], null);
+      if (chunks) chunks.textContent = "узлов в выдаче: " + (pkbNodesDS ? pkbNodesDS.length : 0);
       if (hint) hint.textContent = "Подсветка — по мере ввода. Глубина связей — ползунком. Лупа — семантика + LLM.";
       return;
     }
     var matches = pkbFindMatches(q);
     if (!matches.length) {
       pkbApplySelection([], null);
+      if (chunks) chunks.textContent = "узлов в выдаче: 0";
       if (hint) hint.textContent = "Совпадений нет. Нажмите лупу для семантического поиска по смыслу.";
       return;
     }
     var dmap = pkbBfsDepth(matches, depth);
     pkbApplySelection(matches, dmap);
+    if (chunks) chunks.textContent = "узлов в выдаче: " + Object.keys(dmap).length;
     if (hint) hint.textContent = "Найдено: " + matches.length + " · с глубиной " + depth + ": " + Object.keys(dmap).length + ".";
   }
 
@@ -679,6 +683,8 @@
       var c = $("pkb-kg-counts");
       if (c) c.textContent = "узлов: " + (d.counts ? d.counts.nodes : (d.nodes || []).length) +
         " · связей: " + (d.counts ? d.counts.edges : (d.edges || []).length);
+      var ch = $("pkb-kg-chunks-count");
+      if (ch) ch.textContent = "узлов в выдаче: " + (d.counts ? d.counts.nodes : (d.nodes || []).length);
     } catch (e) {
       pkbDbgErr("pkbLoadFull:error", e && e.message ? e.message : e);
       if (btn) btn.style.display = "";
@@ -747,6 +753,8 @@
       var c = $("pkb-kg-counts");
       if (c) c.textContent = "сидов: " + (d.found || 0) + " · узлов: " +
         (d.counts ? d.counts.nodes : 0) + " · связей: " + (d.counts ? d.counts.edges : 0);
+      var ch2 = $("pkb-kg-chunks-count");
+      if (ch2) ch2.textContent = "узлов в выдаче: " + (d.counts ? d.counts.nodes : 0);
       if (wantSum && sumBox) {
         if (d.summary) {
           sumBox.hidden = false;
@@ -785,10 +793,13 @@
     }
     var depth = $("pkb-kg-depth");
     var badge = $("pkb-kg-depth-badge");
-    if (depth) depth.addEventListener("input", function () {
+    if (depth) {
       if (badge) badge.textContent = depth.value;
-      pkbRealtimeFilter();
-    });
+      depth.addEventListener("input", function () {
+        if (badge) badge.textContent = depth.value;
+        pkbRealtimeFilter();
+      });
+    }
   }
 
   async function openGraphFlow() {

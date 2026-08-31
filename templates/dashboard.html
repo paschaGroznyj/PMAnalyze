@@ -654,8 +654,8 @@
   #pkb-kg-query{width:100%; box-sizing:border-box; border:2px solid var(--ink); background:#fff; color:var(--ink); padding:10px 44px 10px 10px; font-size:14px; outline:none; transition:box-shadow .1s}
   #pkb-kg-query:focus{box-shadow:3px 3px 0 var(--orange)}
   .pkb-kg-llm{display:inline-flex; align-items:center; gap:6px; font-size:12px; white-space:nowrap; width:100%; justify-content:flex-start; margin-top:8px}
-  .pkb-kg-depth-row{display:flex; align-items:center; gap:12px}
-  .pkb-kg-depth-row .kg-depth-range{flex:1 1 auto}
+  .pkb-kg-depth-row{display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap}
+  .pkb-kg-depth-row .kg-depth-range{flex:0 0 auto; width:190px}
   .pkb-kg-hint{font-size:11px; color:var(--ink); opacity:.55; line-height:1.45}
   .pkb-kg-summary{background:#fff; padding:9px 12px; font-size:14px; color:#4a443c; line-height:1.5; border:2px solid var(--ink)}
   .pkb-kg-summary p{margin:0 0 8px}
@@ -874,6 +874,7 @@
             <span class="mono kg-depth-label">глубина связей</span>
             <input type="range" min="0" max="4" value="1" step="1" id="pkb-kg-depth" class="kg-depth-range">
             <span class="mono kg-depth-badge" id="pkb-kg-depth-badge">1</span>
+            <span class="mono kg-chunks" id="pkb-kg-chunks-count">узлов в выдаче: 0</span>
           </div>
           <div class="kg-search-hint mono pkb-kg-hint" id="pkb-kg-hint">Подсветка работает при вводе. Глубина применяется в реальном времени ползунком. LLM — только по кнопке-лупе.</div>
           <div class="kg-search-summary pkb-kg-summary" id="pkb-kg-summary" hidden></div>

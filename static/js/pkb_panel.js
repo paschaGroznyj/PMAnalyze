@@ -578,6 +578,9 @@
       }).join("");
       card.innerHTML =
         '<button class="pkb-kg-card-close" type="button" aria-label="Закрыть">×</button>' +
+        '<button class="pkb-kg-card-delete" type="button" aria-label="Удалить узел" title="Удалить эту карточку и её связи">' +
+          '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path></svg>' +
+        '</button>' +
         '<h4>' + pkbEscHtml(d.label || d.node_id) + '</h4>' +
         (tags ? '<div class="mono" style="font-size:11px;margin-bottom:6px;color:#6b5a45">' + pkbEscHtml(tags) + '</div>' : '') +
         '<div class="pkb-kg-card-text">' + pkbMdToHtml(d.text || d.text_knowledge || "") + '</div>' +
@@ -585,6 +588,8 @@
       pkbEnableCardScrollIsolation(card);
       var x = card.querySelector(".pkb-kg-card-close");
       if (x) x.addEventListener("click", pkbCloseCard);
+      var del = card.querySelector(".pkb-kg-card-delete");
+      if (del) del.addEventListener("click", pkbDeleteSelectedNode);
       Array.prototype.forEach.call(card.querySelectorAll(".pkb-kg-neigh button"), function (b) {
         b.addEventListener("click", function () { pkbOpenNodeCardSafe(b.getAttribute("data-nid")); });
       });
@@ -592,10 +597,15 @@
       pkbDbgErr("pkbOpenCard:error", {nodeId: nodeId, message: e && e.message ? e.message : String(e)});
       card.innerHTML =
         '<button class="pkb-kg-card-close" type="button" aria-label="Закрыть">×</button>' +
+        '<button class="pkb-kg-card-delete" type="button" aria-label="Удалить узел" title="Удалить эту карточку и её связи">' +
+          '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path></svg>' +
+        '</button>' +
         '<div class="mono">ошибка карточки: ' + pkbEscHtml(e.message) + '</div>';
       pkbEnableCardScrollIsolation(card);
       var x2 = card.querySelector(".pkb-kg-card-close");
       if (x2) x2.addEventListener("click", pkbCloseCard);
+      var del2 = card.querySelector(".pkb-kg-card-delete");
+      if (del2) del2.addEventListener("click", pkbDeleteSelectedNode);
     }
   }
 
@@ -888,8 +898,6 @@
       var qEl = $("pkb-kg-query");
       pkbLoadFull().then(function () { if (qEl && qEl.value.trim()) pkbRealtimeFilter(); });
     });
-    var delNode = $("pkb-kg-delete-node");
-    if (delNode) delNode.addEventListener("click", pkbDeleteSelectedNode);
     var delAll = $("pkb-kg-delete-all");
     if (delAll) delAll.addEventListener("click", pkbDeleteAllNodes);
     var exportBtn = $("btn-kg-export");

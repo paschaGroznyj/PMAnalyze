@@ -675,6 +675,9 @@
   .pkb-kg-card{position:absolute; right:12px; top:12px; z-index:25; width:min(420px, calc(100% - 24px)); max-height:calc(100% - 24px); overflow:auto; margin:0; border:2px solid var(--ink); background:var(--paper); box-shadow:4px 4px 0 var(--ink); padding:14px 16px; pointer-events:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch}
   .pkb-kg-card h4{margin:0 0 8px; font-size:15px}
   .pkb-kg-card .pkb-kg-card-close{position:absolute; top:8px; right:8px; min-width:32px; min-height:32px; border:2px solid var(--ink); background:#fff; cursor:pointer; font-size:18px; line-height:1}
+  .pkb-kg-card .pkb-kg-card-delete{position:absolute; top:8px; right:46px; min-width:32px; min-height:32px; display:inline-flex; align-items:center; justify-content:center; border:2px solid var(--ink); background:#fff; cursor:pointer}
+  .pkb-kg-card .pkb-kg-card-delete:hover{background:#FDE6DE}
+  .pkb-kg-card .pkb-kg-card-delete svg{width:16px; height:16px; fill:none; stroke:var(--ink); stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
   .pkb-kg-card .pkb-kg-card-text{font-size:13px; line-height:1.5; white-space:pre-wrap}
   .pkb-kg-card .pkb-kg-neigh{margin-top:10px; display:flex; flex-wrap:wrap; gap:6px}
   .pkb-kg-card .pkb-kg-neigh button{font-size:11px; padding:4px 8px; border:2px solid var(--ink); background:var(--sky); cursor:pointer; box-shadow:2px 2px 0 var(--ink)}
@@ -711,6 +714,8 @@
     .pkb-kg-depth-row .kg-depth-range{min-height:24px}
     .pkb-kg-card{left:8px; right:8px; top:8px; width:auto; max-height:calc(100% - 16px); padding:12px}
     .pkb-kg-card .pkb-kg-neigh button{min-height:36px; padding:8px 10px}
+    .pkb-kg-card .pkb-kg-card-close,.pkb-kg-card .pkb-kg-card-delete{min-width:40px; min-height:40px}
+    .pkb-kg-card .pkb-kg-card-delete{right:54px}
     #pkb-kg-load-full{width:100px; height:100px}
   }
 
@@ -877,14 +882,13 @@
                   <polyline points="21 3 21 9 15 9"></polyline>
                 </svg>
               </button>
-              <button class="pkb-kg-danger" id="pkb-kg-delete-node" type="button" title="Удалить открытую карточку и её связи" aria-label="Удалить открытую карточку">
+              <button class="pkb-kg-danger pkb-kg-danger-all" id="pkb-kg-delete-all" type="button" title="Удалить все узлы и связи" aria-label="Удалить все узлы">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <polyline points="3 6 5 6 21 6"></polyline>
                   <path d="M8 6V4h8v2"></path>
                   <path d="M19 6l-1 14H6L5 6"></path>
                 </svg>
               </button>
-              <button class="pkb-kg-danger pkb-kg-danger-all" id="pkb-kg-delete-all" type="button" title="Удалить все узлы и связи" aria-label="Удалить все узлы">Удалить все</button>
               <button class="kg-export" id="btn-kg-export" type="button" title="Выгрузить мой граф в CSV" aria-label="Выгрузить мой граф в CSV">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 3v10"></path>

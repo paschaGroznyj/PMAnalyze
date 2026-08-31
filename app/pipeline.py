@@ -1459,10 +1459,23 @@ class PMAnalyzePipeline:
     async def _parser_progress_finish(self):
         now = datetime.now(timezone.utc).isoformat()
         async with self._parser_progress_lock:
-            self._parser_progress["running"] = False
-            self._parser_progress["current_source"] = ""
-            self._parser_progress["active_sources"] = []
-            self._parser_progress["updated_at"] = now
+            # После завершения цикла очищаем прогресс полностью,
+            # чтобы после F5 UI показывал "парсер: idle".
+            self._parser_progress = {
+                "running": False,
+                "total_sources": 0,
+                "done_sources": 0,
+                "current_source": "",
+                "active_sources": [],
+                "found_raw_total": 0,
+                "found_final_total": 0,
+                "per_source_raw": {},
+                "per_source_final": {},
+                "dropped_old_by_source": {},
+                "errors": {},
+                "started_at": None,
+                "updated_at": now,
+            }
 
     async def get_parser_progress(self) -> dict:
         async with self._parser_progress_lock:

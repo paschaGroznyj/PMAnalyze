@@ -86,6 +86,10 @@ class Settings:
     kg_generic_target_min_score: float = float(os.getenv("KG_GENERIC_TARGET_MIN_SCORE", "0.88"))
     kg_generic_in_degree_cap: int = int(os.getenv("KG_GENERIC_IN_DEGREE_CAP", "28"))
 
+    # Safety checker for relates_to deletion in pruning stage
+    kg_relates_to_delete_max_per_run: int = int(os.getenv("KG_RELATES_TO_DELETE_MAX_PER_RUN", "400"))
+    kg_relates_to_delete_max_share: float = float(os.getenv("KG_RELATES_TO_DELETE_MAX_SHARE", "0.12"))
+
     cloud_key: str = field(default_factory=lambda: os.getenv("CLOUD_LLM_ACCESS_KEY", "").strip())
     cloud_messages_url: str = "https://foundation-models.api.cloud.ru/v1/messages"
     cloud_chat_url: str = "https://foundation-models.api.cloud.ru/v1/chat/completions"
@@ -346,6 +350,57 @@ class PMAnalyzePipeline:
             )
         return int(deleted or 0)
 
+    async def _check_relates_to_deletion_guard(self, deleted_relates_to: int) -> dict:
+        """Guard against excessive relates_to pruning in one run.
+
+        Returns:
+          {
+            "ok": bool,
+            "deleted": int,
+            "max_abs": int,
+            "max_share": float,
+            "baseline_relates_to": int,
+            "actual_share": float,
+            "reason": str,
+          }
+        """
+        deleted = max(0, int(deleted_relates_to or 0))
+        max_abs = max(1, int(self.settings.kg_relates_to_delete_max_per_run or 400))
+        max_share = float(self.settings.kg_relates_to_delete_max_share or 0.12)
+
+        async with self.pool.acquire() as con:
+            baseline = await con.fetchval(
+                """
+                SELECT count(*)
+                FROM process_mining.entity_relations
+                WHERE lower(COALESCE(relation_type,'')) IN ('relates_to','related_to','relates','associated_with')
+                """
+            )
+
+        baseline = int(baseline or 0)
+        total_before = baseline + deleted
+        actual_share = (deleted / total_before) if total_before > 0 else 0.0
+
+        over_abs = deleted > max_abs
+        over_share = actual_share > max_share
+        ok = not (over_abs or over_share)
+
+        reason_parts = []
+        if over_abs:
+            reason_parts.append(f"abs_limit_exceeded: {deleted} > {max_abs}")
+        if over_share:
+            reason_parts.append(f"share_limit_exceeded: {actual_share:.4f} > {max_share:.4f}")
+
+        return {
+            "ok": ok,
+            "deleted": deleted,
+            "max_abs": max_abs,
+            "max_share": max_share,
+            "baseline_relates_to": baseline,
+            "actual_share": actual_share,
+            "reason": "; ".join(reason_parts) if reason_parts else "ok",
+        }
+
     async def _collapse_knowledge_nodes(self) -> dict:
         """Схлопывание дубликатов knowledge:
         1) exact-схлопывание по нормализованному тексту
@@ -464,6 +519,17 @@ class PMAnalyzePipeline:
         # ---- 3) prune inbound to generic-definition targets ----
         generic_pruned = await self._prune_generic_definition_inbound()
 
+        # ---- 4) checker: контролируем объём удаления generic-связей relates_to ----
+        relates_to_guard = await self._check_relates_to_deletion_guard(generic_pruned)
+        if not relates_to_guard.get("ok", True):
+            print(
+                "[pmanalyze] WARNING relates_to prune guard triggered: "
+                f"deleted={relates_to_guard.get('deleted')} "
+                f"baseline={relates_to_guard.get('baseline_relates_to')} "
+                f"share={relates_to_guard.get('actual_share')} "
+                f"reason={relates_to_guard.get('reason')}"
+            )
+
         return {
             "ok": True,
             "exact_groups": exact_groups,
@@ -473,6 +539,7 @@ class PMAnalyzePipeline:
             "semantic_threshold": th,
             "pair_limit": pair_limit,
             "generic_pruned_edges": generic_pruned,
+            "relates_to_guard": relates_to_guard,
         }
 
     async def _merge_knowledge_duplicates(self, canonical_id: int, dup_ids: list[int], reason: str) -> bool:
@@ -727,17 +794,53 @@ class PMAnalyzePipeline:
         headers = {"Content-Type": "application/json"}
         if self.settings.parser_api_key:
             headers["X-Api-Key"] = self.settings.parser_api_key
+
         payload = {"max_per_source": int(self.settings.max_per_source), "ui_lang": "en"}
         if parser_sources:
             payload["include_sources"] = [str(s).strip().lower() for s in parser_sources if str(s).strip()]
+
         try:
             async with httpx.AsyncClient(timeout=self.settings.parser_timeout) as client:
                 r = await client.post(self.settings.parser_run_url, headers=headers, json=payload)
                 r.raise_for_status()
                 data = r.json()
-            return data.get("articles", []) if data.get("ok") else []
+
+            if not data.get("ok"):
+                err = data.get("error") or data.get("errors") or "unknown"
+                print(f"[pmanalyze] collect parser_not_ok url={self.settings.parser_run_url} error={err}")
+                return []
+
+            articles = data.get("articles", [])
+            total = data.get("total")
+            sources = data.get("sources")
+            errors = data.get("errors")
+            if (not articles) or errors:
+                print(
+                    f"[pmanalyze] collect summary url={self.settings.parser_run_url} "
+                    f"total={total} articles={len(articles)} sources={sources} errors={errors}"
+                )
+            return articles
+
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code if e.response is not None else "n/a"
+            req_url = str(e.request.url) if e.request is not None else self.settings.parser_run_url
+            body = ""
+            try:
+                if e.response is not None:
+                    body = (e.response.text or "")[:700]
+            except Exception:
+                body = "<response_text_unavailable>"
+            print(
+                f"[pmanalyze] collect http_error type={type(e).__name__} status={status} "
+                f"url={req_url} payload={payload} body={body}"
+            )
+            return []
+
         except Exception as e:
-            print(f"[pmanalyze] collect error: {e}")
+            print(
+                f"[pmanalyze] collect error type={type(e).__name__} repr={repr(e)} "
+                f"url={self.settings.parser_run_url} payload={payload}"
+            )
             return []
 
     async def _upsert_articles(self, articles: list[dict]) -> list[int]:

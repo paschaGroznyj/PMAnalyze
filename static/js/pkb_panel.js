@@ -358,6 +358,23 @@
     if (card) { card.hidden = true; card.innerHTML = ""; }
   }
 
+  function pkbEnsureCard() {
+    var card = $("pkb-kg-card");
+    if (card) return card;
+    var host = $("pkb-kg-canvas");
+    if (!host) {
+      pkbDbgErr("pkbEnsureCard:noHost");
+      return null;
+    }
+    card = document.createElement("div");
+    card.id = "pkb-kg-card";
+    card.className = "kg-card pkb-kg-card";
+    card.hidden = true;
+    host.appendChild(card);
+    pkbDbgWarn("pkbEnsureCard:created_missing_card", {hostChildren: host.children ? host.children.length : null});
+    return card;
+  }
+
   function pkbNormNodeId(nid) {
     if (nid === null || nid === undefined) return null;
     var s = String(nid).trim();
@@ -481,7 +498,8 @@
     });
 
     pkbBuilt = true;
-    pkbDbg("pkbBuildNetwork:ready", {pkbBuilt: pkbBuilt});
+    var cardAtReady = $("pkb-kg-card");
+    pkbDbg("pkbBuildNetwork:ready", {pkbBuilt: pkbBuilt, hasCard: !!cardAtReady, hostChildren: host && host.children ? host.children.length : null});
   }
 
   function pkbFocusNode(nodeId, openCard) {
@@ -523,7 +541,7 @@
 
   async function pkbOpenCard(nodeId) {
     nodeId = pkbNormNodeId(nodeId);
-    var card = $("pkb-kg-card");
+    var card = pkbEnsureCard();
     pkbDbg("pkbOpenCard:start", {nodeId: nodeId, hasCard: !!card});
     if (!card || !nodeId) {
       pkbDbgWarn("pkbOpenCard:skip", {nodeId: nodeId, hasCard: !!card});

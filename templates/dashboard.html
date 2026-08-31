@@ -321,8 +321,8 @@
     /* мобилка: восстанавливаем padding-right и выставляем width:100% для блока.
        иконка абсолютом справа */
     .wx-main{
-      min-width:0; min-height:112px; overflow:visible;
-      padding-right:96px; align-self:stretch;
+      min-width:0; min-height:120px; overflow:visible;
+      padding:8px 88px 8px 0; align-self:stretch;
       display:flex; flex-direction:column; justify-content:center; gap:4px;
     }
     .wx-main > div{position:relative; z-index:2}
@@ -331,11 +331,12 @@
     .wx-temp{font-size:32px}
     /* вторичный текст крупнее и контрастнее, чтобы читался на телефоне */
     .wx-sub{font-size:12px; color:#5a5348}
-    /* иконка строго справа и ПО ЦЕНТРУ по вертикали, целиком в пределах блока,
-       без обрезки: right:8px (в поле), top:50%, размер ужат под padding-right */
+    /* иконка: центр по вертикали, целиком в пределах карточки.
+       72px + вертикальные отступы карточки (16px сверху/снизу) < min-height,
+       поэтому при top:50% translateY(-50%) не упирается в края и не режется */
     .wx-sky{
-      position:absolute; right:8px; top:50%; transform:translateY(-50%);
-      width:80px; height:80px; opacity:.24; z-index:1; pointer-events:none;
+      position:absolute; right:10px; top:50%; transform:translateY(-50%);
+      width:72px; height:72px; opacity:.24; z-index:1; pointer-events:none;
     }
   }
 

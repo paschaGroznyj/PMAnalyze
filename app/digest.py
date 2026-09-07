@@ -280,10 +280,14 @@ def render_reviews_markdown(data: dict) -> str:
 
 
 def upload_markdown_to_obs(md_text: str, preset: str, date_from_local: datetime, date_to_local: datetime) -> dict:
-    """Загрузка markdown в OBS. Возвращает dict {ok, obs_uri, public_url, key, error}."""
+    """Загрузка markdown в OBS. Возвращает dict {ok, obs_uri, public_url, key, error}.
+
+    Важно: любые ошибки OBS НЕ должны ронять отправку дайджеста.
+    """
     try:
         import boto3
         from botocore.client import Config
+        from botocore.exceptions import ClientError
     except Exception as e:
         return {"ok": False, "error": f"boto3_import_error: {e}"}
 
@@ -303,33 +307,120 @@ def upload_markdown_to_obs(md_text: str, preset: str, date_from_local: datetime,
     filename = f"digest_{p}_{pfrom}_{pto}_{uniq}.md"
     key = f"PM/digests/{filename}"
 
-    session = boto3.session.Session()
-    s3 = session.client(
-        "s3",
-        endpoint_url=endpoint,
-        region_name=region,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=Config(s3={"addressing_style": "virtual"}),
-    )
-
-    s3.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=md_text.encode("utf-8"),
-        ContentType="text/markdown; charset=utf-8",
-    )
-
     ep = endpoint.replace("https://", "").replace("http://", "").rstrip("/")
-    public_url = f"https://{bucket}.{ep}/{key}"
-    return {
-        "ok": True,
-        "bucket": bucket,
-        "key": key,
-        "obs_uri": f"obs://{bucket}/{key}",
-        "public_url": public_url,
-    }
+    body = md_text.encode("utf-8")
 
+    def _public_url(style: str) -> str:
+        if style == "virtual":
+            return f"https://{bucket}.{ep}/{key}"
+        return f"https://{ep}/{bucket}/{key}"
+
+    def _client(style: str):
+        session = boto3.session.Session()
+        return session.client(
+            "s3",
+            endpoint_url=endpoint,
+            region_name=region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(signature_version="s3v4", s3={"addressing_style": style}),
+        )
+
+    # 1) Прямой put_object
+    preferred = (os.getenv("OBS_ADDRESSING_STYLE", "virtual") or "virtual").strip().lower()
+    styles = [preferred]
+    alt = "path" if preferred == "virtual" else "virtual"
+    if alt not in styles:
+        styles.append(alt)
+
+    last_err = None
+    saw_sha_mismatch = False
+
+    for style in styles:
+        try:
+            s3 = _client(style)
+            s3.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=body,
+                ContentType="text/markdown; charset=utf-8",
+            )
+            return {
+                "ok": True,
+                "bucket": bucket,
+                "key": key,
+                "obs_uri": f"obs://{bucket}/{key}",
+                "public_url": _public_url(style),
+                "addressing_style": style,
+                "upload_mode": "put_object",
+            }
+        except ClientError as e:
+            err = e.response.get("Error", {})
+            code = str(err.get("Code") or "")
+            msg = str(err.get("Message") or "")
+            if code == "XAmzContentSHA256Mismatch" or "x-amz-content-sha256" in msg.lower():
+                saw_sha_mismatch = True
+            last_err = f"{code}: {msg}" if code or msg else str(e)
+        except Exception as e:
+            txt = str(e)
+            if "x-amz-content-sha256" in txt.lower():
+                saw_sha_mismatch = True
+            last_err = txt
+
+    # 2) Fallback: presigned POST multipart/form-data
+    if saw_sha_mismatch:
+        try:
+            from urllib import request as urllib_request
+            from email.generator import _make_boundary
+
+            s3 = _client("virtual")
+            post = s3.generate_presigned_post(
+                Bucket=bucket,
+                Key=key,
+                ExpiresIn=600,
+                Fields={"Content-Type": "text/markdown; charset=utf-8"},
+                Conditions=[{"Content-Type": "text/markdown; charset=utf-8"}],
+            )
+
+            boundary = _make_boundary()
+            parts = []
+            for k, v in post["fields"].items():
+                parts.append(f"--{boundary}\r\n".encode())
+                parts.append(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode())
+                parts.append(str(v).encode())
+                parts.append(b"\r\n")
+
+            parts.append(f"--{boundary}\r\n".encode())
+            parts.append(b'Content-Disposition: form-data; name="file"; filename="digest.md"\r\n')
+            parts.append(b"Content-Type: text/markdown; charset=utf-8\r\n\r\n")
+            parts.append(body)
+            parts.append(b"\r\n")
+            parts.append(f"--{boundary}--\r\n".encode())
+            mp_body = b"".join(parts)
+
+            req = urllib_request.Request(post["url"], data=mp_body, method="POST")
+            req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+            req.add_header("Content-Length", str(len(mp_body)))
+
+            with urllib_request.urlopen(req, timeout=40) as resp:
+                status = getattr(resp, "status", 0)
+                if int(status) not in (200, 201, 204):
+                    raise RuntimeError(f"obs_presigned_post_bad_status: {status}")
+
+            s3.head_object(Bucket=bucket, Key=key)
+            return {
+                "ok": True,
+                "bucket": bucket,
+                "key": key,
+                "obs_uri": f"obs://{bucket}/{key}",
+                "public_url": _public_url("virtual"),
+                "addressing_style": "virtual",
+                "upload_mode": "presigned_post",
+            }
+        except Exception as e:
+            last_err = f"{last_err}; presigned_post_fallback_failed: {e}"
+
+    return {"ok": False, "error": f"obs_put_failed: {last_err}", "bucket": bucket, "key": key}
 
 def render_digest_html(data: dict) -> str:
     preset = data["preset"]
